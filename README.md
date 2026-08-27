@@ -193,6 +193,23 @@ Create a Secrets Manager secret with this JSON shape:
 {"li_at":"REDACTED","jsessionid":"ajax:REDACTED","cookie_header":"OPTIONAL_REDACTED"}
 ```
 
+The interactive helper keeps all three values out of shell history and terminal
+output. On macOS, copy only the complete `Cookie` request-header value from
+Chrome DevTools, then let the helper read it directly from the clipboard:
+
+```bash
+python3 scripts/configure_aws_secret.py \
+  --profile tross \
+  --region ap-south-1 \
+  --expected-account YOUR_ACCOUNT_ID \
+  --cookie-header-from-clipboard
+```
+
+The helper still asks for `li_at` and `JSESSIONID` through hidden prompts and
+refuses to write unless those values match the complete header. It never prints
+the clipboard contents. Copy something non-sensitive after rotation so the
+header does not remain on the clipboard.
+
 Then deploy:
 
 ```bash

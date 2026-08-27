@@ -23,6 +23,11 @@ def parse_args() -> argparse.Namespace:
         required=True,
         help="Refuse to write unless STS returns this AWS account ID",
     )
+    parser.add_argument(
+        "--cookie-header-from-clipboard",
+        action="store_true",
+        help="Read the complete Cookie header from the macOS clipboard without echoing it",
+    )
     return parser.parse_args()
 
 
@@ -33,12 +38,10 @@ def require_value(prompt: str) -> str:
     return value
 
 
-def optional_cookie_header(*, li_at: str, jsessionid: str) -> str | None:
-    header = getpass.getpass(
-        "LinkedIn full Cookie header (hidden, optional; Enter to skip): "
-    ).strip()
-    if not header:
-        return None
+def validate_cookie_header(header: str, *, li_at: str, jsessionid: str) -> str:
+    header = header.strip()
+    if header.casefold().startswith("cookie:"):
+        header = header.split(":", 1)[1].strip()
     if len(header) > MAX_COOKIE_HEADER_LENGTH or any(
         ord(character) < 0x20 or ord(character) > 0x7E for character in header
     ):
@@ -64,6 +67,30 @@ def optional_cookie_header(*, li_at: str, jsessionid: str) -> str | None:
     if len(cookie_jsessionids) != 1 or cookie_jsessionids[0].strip('"') != jsessionid.strip('"'):
         raise ValueError("The Cookie header does not match JSESSIONID")
     return header
+
+
+def optional_cookie_header(*, li_at: str, jsessionid: str) -> str | None:
+    header = getpass.getpass(
+        "LinkedIn full Cookie header (hidden, optional; Enter to skip): "
+    ).strip()
+    if not header:
+        return None
+    return validate_cookie_header(header, li_at=li_at, jsessionid=jsessionid)
+
+
+def clipboard_cookie_header(*, li_at: str, jsessionid: str) -> str:
+    try:
+        result = subprocess.run(
+            ["pbpaste"],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+    except OSError as exc:
+        raise ValueError("The macOS clipboard could not be read") from exc
+    if result.returncode != 0 or not result.stdout.strip():
+        raise ValueError("The macOS clipboard does not contain a Cookie header")
+    return validate_cookie_header(result.stdout, li_at=li_at, jsessionid=jsessionid)
 
 
 def aws(
@@ -97,10 +124,16 @@ def main() -> int:
         return 2
 
     try:
-        cookie_header = optional_cookie_header(
-            li_at=li_at,
-            jsessionid=normalized_jsessionid,
-        )
+        if args.cookie_header_from_clipboard:
+            cookie_header = clipboard_cookie_header(
+                li_at=li_at,
+                jsessionid=normalized_jsessionid,
+            )
+        else:
+            cookie_header = optional_cookie_header(
+                li_at=li_at,
+                jsessionid=normalized_jsessionid,
+            )
     except ValueError as exc:
         print(str(exc), file=sys.stderr)
         return 2
