@@ -40,10 +40,7 @@ Resources:
         ThrottlingBurstLimit: 2
         ThrottlingRateLimit: 1
       RouteSettings:
-        "GET /v1/profiles":
-          ThrottlingBurstLimit: 1
-          ThrottlingRateLimit: 0.05
-        "POST /v1/profiles":
+        "ANY /v1/profiles":
           ThrottlingBurstLimit: 1
           ThrottlingRateLimit: 0.05
 
@@ -74,19 +71,12 @@ Resources:
             Path: /{proxy+}
             Method: ANY
             PayloadFormatVersion: "2.0"
-        ProfileGet:
+        ProfileRequest:
           Type: HttpApi
           Properties:
             ApiId: !Ref ProfileApi
             Path: /v1/profiles
-            Method: GET
-            PayloadFormatVersion: "2.0"
-        ProfilePost:
-          Type: HttpApi
-          Properties:
-            ApiId: !Ref ProfileApi
-            Path: /v1/profiles
-            Method: POST
+            Method: ANY
             PayloadFormatVersion: "2.0"
 
 Outputs:

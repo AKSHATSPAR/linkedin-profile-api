@@ -167,8 +167,9 @@ integrity, and deterministic production dependency exports.
 
 The included SAM template deploys a public HTTP API, a 256 MiB ARM64 Lambda, and
 a least-privilege runtime permission that can read only the selected secret. The
-profile routes have a burst of one and replenish at 0.05 requests per second;
-other documentation and health routes retain a one-request-per-second default.
+profile route has a shared burst of one and replenishes at 0.05 requests per
+second; other documentation and health routes retain a one-request-per-second
+default.
 The profile-route burst is one, the Lambda timeout is 15 seconds, and the
 LinkedIn work has a 10-second total deadline with no AWS retries or section
 fallbacks.
@@ -197,7 +198,7 @@ hash-verified export and pins the Python base-image index digest.
 
 The stack output named `ApiUrl` is the public base URL. Rotate or delete the
 secret after evaluation. A `$15` AWS Budget is useful as an alert, but AWS
-Budgets do **not** stop spend. The low route throttle, burst-one profile routes,
+Budgets do **not** stop spend. The low route throttle, burst-one profile route,
 short deadline, and small function bound this stack's request-driven cost under
 the intended evaluation load; they cannot cap charges from unrelated resources
 in the AWS account.
