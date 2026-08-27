@@ -1,10 +1,9 @@
 # LinkedIn Profile API
 
-A purely reverse-engineered challenge implementation that accepts a LinkedIn
-member profile URL and returns a stable, normalized JSON document. It directly
-calls the authenticated, read-only HTTP surface used by LinkedIn's web client. No
-browser, browser automation, or official LinkedIn Partner API is used by the
-service.
+A reverse-engineered implementation of the Tross challenge. Give it a LinkedIn
+member URL and it returns the profile as predictable JSON. The service calls the
+same authenticated, read-only HTTP endpoints used by LinkedIn's web client; it
+does not run a browser or use the official LinkedIn Partner API.
 
 Built by [Akshat Sparsh](https://github.com/AKSHATSPAR) for the Tross engineering
 challenge.
@@ -30,8 +29,8 @@ curl --get 'https://v5k8x8a787.execute-api.ap-south-1.amazonaws.com/v1/profiles'
   --data-urlencode 'url=https://www.linkedin.com/in/akshat-sparsh-b648a039a/'
 ```
 
-The response has an explicit schema version and always returns arrays for
-repeatable sections:
+Here is an abridged response. The schema is versioned, and sections that can
+contain several entries are always returned as arrays:
 
 ```json
 {
@@ -53,7 +52,16 @@ repeatable sections:
     "location": {"display_name": "Chennai, Tamil Nadu, India"},
     "images": {},
     "experience": [],
-    "education": [],
+    "education": [
+      {
+        "school_name": "Vellore Institute of Technology",
+        "date_range": {
+          "start": {"year": 2023},
+          "end": {"year": 2027},
+          "present": false
+        }
+      }
+    ],
     "skills": [],
     "certifications": [],
     "languages": [],
@@ -81,11 +89,11 @@ API Gateway ── profile-route burst 1, rate 0.05 requests/second
   ▼
 Lambda / FastAPI ── 4 KiB body cap ── peer-IP limiter
   │
-  ├── bounded process-local TTL cache + same-key single-flight
+  ├── small in-memory TTL cache + one in-flight call per profile
   │
   ├── AWS Secrets Manager (lazy read on first cache miss, then memory-cached)
   │
-  ▼  10-second deadline, at most 6 AWS / 8 local physical attempts
+  ▼  10-second deadline, at most 6 AWS / 8 local LinkedIn calls
 LinkedIn Voyager ── identity-bound primary profile; optional sections off by default
   ▼
 normalizer ── versioned public schema
@@ -96,20 +104,18 @@ Key choices:
 - **Direct HTTP, not browser automation.** Runtime extraction uses `httpx` against
   a fixed LinkedIn origin. It never launches, controls, or depends on a browser;
   the session cookies are deployment credentials supplied out of band.
-- **Modern endpoint with a bounded compatibility path.** The client tries two
-  known `identity/dash/profiles?q=memberIdentity` decorations and then the older
-  `profileView` shape. Every physical attempt, including retries and optional
-  sections, consumes one shared per-request budget.
-- **Fail-closed profile identity and ownership.** The profile referenced by
-  LinkedIn's response root must match the requested `publicIdentifier`
-  case-insensitively. Every parsed member-scoped entity (position, education,
-  skill, and similar sections) must encode the same member ID in its URN.
-  Wrong roots and foreign section entities are not normalized or cached, while
-  unrelated non-root profile entities such as recommendations remain harmless.
-- **Stable output over upstream leakage.** LinkedIn URNs and entity graphs are
-  normalized into typed Pydantic models. Upstream bodies are never returned in
-  errors.
-- **Safe public surface.** Input parsing permits only HTTPS LinkedIn member URLs,
+- **A small compatibility fallback.** LinkedIn changes its internal API without
+  notice. The client tries two current `identity/dash/profiles` response formats
+  and one older `profileView` format. All LinkedIn calls share the same small
+  request budget.
+- **Verify before returning.** The requested public identifier must match the
+  profile at the root of LinkedIn's response. Positions, education, skills, and
+  similar records must also belong to that same member. Data for another member
+  is rejected rather than mixed into the result.
+- **Return our schema, not LinkedIn's internals.** The parser converts entity
+  graphs and URNs into typed Pydantic models. Raw upstream bodies are never
+  returned to callers, including in errors.
+- **Keep the public endpoint narrow.** Input parsing permits only HTTPS LinkedIn member URLs,
   rejects ports and embedded credentials, follows no redirects, caps decoded
   request and upstream response sizes, rate-limits by the actual network peer,
   and applies API Gateway throttling.
@@ -117,8 +123,8 @@ Key choices:
   challenge and is disabled by default. Profile data is cached only in process
   memory and responses carry `Cache-Control: no-store`.
 
-The protocol discovery, endpoint choices, headers, fallbacks, response-graph
-invariants, and limitations are documented in
+The protocol discovery, endpoint choices, headers, fallbacks, identity checks,
+and limitations are documented in
 [Reverse-engineering notes](REVERSE_ENGINEERING.md). A repository architecture
 test rejects browser-automation dependencies/imports, while client tests capture
 the outbound request and assert that it is a direct HTTPS call to the fixed
@@ -160,18 +166,13 @@ Run the complete local verification suite:
 make verify
 ```
 
-The test suite uses sanitized synthetic Voyager fixtures—no real LinkedIn
-response or session secret is committed. It covers URL ambiguity and length,
-declared and streamed body limits, forged forwarding headers, modern and legacy
-profile-root/member-ownership mismatches, conflicting nested identities,
-malformed and oversized upstream payloads, protocol/decoding failures, the exact
-physical-call ceiling, optional-section degradation, same-key concurrency and
-cancellation, cache expiry, Secrets Manager loading/failure sanitation, all
-normalized section families, stable HTTP errors, the no-browser runtime
-invariant, OpenAPI limits, and an API Gateway v2 Lambda event. CI enforces at
-least 95% line coverage, audits locked dependencies for known vulnerabilities,
-and checks formatting, lint, strict typing, lockfile integrity, and deterministic
-production dependency exports.
+The tests use sanitized Voyager-shaped fixtures; no real LinkedIn response or
+session is committed. They cover malformed URLs and payloads, response-size and
+call limits, profile-identity mismatches, every returned section, caching and
+concurrency, Secrets Manager failures, stable API errors, and the Lambda entry
+point. A separate architecture test prevents browser-automation packages from
+entering the runtime. CI requires at least 95% coverage and also checks formatting,
+linting, strict types, locked dependencies, and reproducible production exports.
 
 ## AWS deployment
 
@@ -224,7 +225,7 @@ aws logs put-retention-policy \
 
 ## Error contract
 
-Expected failures use a small stable envelope:
+Expected failures use the same small JSON shape:
 
 ```json
 {
@@ -240,7 +241,7 @@ Expected failures use a small stable envelope:
 upstream throttling, `502` is an unexpected LinkedIn response, and `503` means
 the configured session is missing or expired.
 
-## Constraints and responsible use
+## Known limitations and responsible use
 
 LinkedIn's internal web API is undocumented and may change without notice.
 LinkedIn also restricts automated access in its terms. This is a scoped hiring

@@ -28,10 +28,9 @@ used as the CSRF header. These values are read lazily from the environment or AW
 Secrets Manager and never returned by the API.
 
 Two known full-profile decoration revisions are tried because the internal
-schema is undocumented and changes over time. A bounded legacy
-`/identity/profiles/{publicIdentifier}/profileView` call is the final primary
-compatibility path. Extra section calls exist only as an opt-in fallback and are
-disabled in the AWS deployment.
+schema is undocumented and changes over time. The older
+`/identity/profiles/{publicIdentifier}/profileView` endpoint is the last fallback.
+Extra section calls are opt-in and remain disabled in the AWS deployment.
 
 ## Response-graph validation
 
@@ -47,22 +46,21 @@ rule applies to the legacy compatibility shape. If outer legacy profile data and
 a nested `miniProfile` disagree about either the public identifier or member URN,
 the response is rejected instead of mixing fields from different people.
 
-## Bounded behavior
+## Safety limits
 
-The implementation follows no redirects, limits decoded response bytes, limits
-documents/entities, applies a total deadline, and charges every physical request
-(including retries and fallbacks) against one attempt budget. Contact data and
-additional section fallbacks are disabled by default. Expected URL, credential,
-HTTP transport, JSON, identity, ownership, and parser failures become stable
-public error envelopes without including upstream bodies or provider details.
+The client follows no redirects and puts limits on response size, entity count,
+total time, and the number of LinkedIn calls. Retries and fallbacks spend from
+that same call budget. Contact data and extra section calls are disabled by
+default. Errors returned by the public API never include LinkedIn response bodies
+or provider details.
 
-## Reproducible proof
+## What I verified
 
-All tests use synthetic Voyager-shaped fixtures and `httpx.MockTransport`; no
-LinkedIn session or recorded personal-data response is committed. The
-architecture test statically rejects browser-automation runtime dependencies and
-imports. A client test captures the actual outbound request construction and
-asserts HTTPS, the fixed `www.linkedin.com` host, and the `/voyager/api` path.
+The tests use synthetic Voyager-shaped fixtures and `httpx.MockTransport`; no
+LinkedIn session or recorded personal-data response is committed. One architecture
+test rejects browser-automation dependencies and imports. Another test captures
+the outbound request and verifies HTTPS, the fixed `www.linkedin.com` host, and
+the `/voyager/api` path.
 
 LinkedIn's internal API is undocumented and may change. Decorations and response
 shapes are therefore isolated behind the client/parser boundary rather than

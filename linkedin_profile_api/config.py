@@ -34,7 +34,7 @@ class Settings(BaseSettings):
     linkedin_user_agent: str = (
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/131.0.0.0 Safari/537.36"
+        "Chrome/151.0.0.0 Safari/537.36"
     )
     linkedin_request_timeout_seconds: float = Field(default=6.0, gt=0, le=30)
     linkedin_total_timeout_seconds: float = Field(default=10.0, gt=0, le=45)
