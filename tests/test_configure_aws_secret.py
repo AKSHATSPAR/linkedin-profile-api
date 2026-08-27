@@ -28,6 +28,28 @@ def test_clipboard_cookie_header_is_read_without_echoing(monkeypatch: Any) -> No
 
 
 @pytest.mark.parametrize(
+    ("header", "message"),
+    [
+        ("", "empty"),
+        ("x=" + ("a" * 32_768), "too long"),
+        ("x=one\ny=two", "multiple lines"),
+        ("x=one\ty=two", "non-printable"),
+        ("not-a-pair", "not a cookie pair"),
+        ("bad name=value", "invalid cookie name"),
+    ],
+)
+def test_cookie_header_reports_only_safe_shape_errors(header: str, message: str) -> None:
+    with pytest.raises(ValueError, match=message) as captured:
+        configure_aws_secret.validate_cookie_header(
+            header,
+            li_at="a" * 64,
+            jsessionid="ajax:session",
+        )
+
+    assert "ajax:session" not in str(captured.value)
+
+
+@pytest.mark.parametrize(
     "result",
     [
         subprocess.CompletedProcess(["pbpaste"], 1, stdout="", stderr="unavailable"),

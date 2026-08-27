@@ -10,7 +10,7 @@ import subprocess
 import sys
 
 COOKIE_NAME_PATTERN = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
-MAX_COOKIE_HEADER_LENGTH = 16_384
+MAX_COOKIE_HEADER_LENGTH = 32_768
 
 
 def parse_args() -> argparse.Namespace:
@@ -42,10 +42,17 @@ def validate_cookie_header(header: str, *, li_at: str, jsessionid: str) -> str:
     header = header.strip()
     if header.casefold().startswith("cookie:"):
         header = header.split(":", 1)[1].strip()
-    if len(header) > MAX_COOKIE_HEADER_LENGTH or any(
-        ord(character) < 0x20 or ord(character) > 0x7E for character in header
-    ):
-        raise ValueError("The Cookie header is invalid")
+    if not header:
+        raise ValueError("The Cookie header is empty")
+    if len(header) > MAX_COOKIE_HEADER_LENGTH:
+        raise ValueError(
+            "The Cookie header is too long "
+            f"({len(header)} characters; maximum {MAX_COOKIE_HEADER_LENGTH})"
+        )
+    if "\r" in header or "\n" in header:
+        raise ValueError("The Cookie header contains multiple lines; copy only the Cookie value")
+    if any(ord(character) < 0x20 or ord(character) > 0x7E for character in header):
+        raise ValueError("The Cookie header contains non-printable or non-ASCII text")
 
     cookies: dict[str, list[str]] = {}
     for segment in header.split(";"):
@@ -53,12 +60,12 @@ def validate_cookie_header(header: str, *, li_at: str, jsessionid: str) -> str:
         if not pair:
             continue
         if "=" not in pair:
-            raise ValueError("The Cookie header is invalid")
+            raise ValueError("The Cookie header contains text that is not a cookie pair")
         name, value = pair.split("=", 1)
         name = name.strip()
         value = value.strip()
         if not COOKIE_NAME_PATTERN.fullmatch(name):
-            raise ValueError("The Cookie header is invalid")
+            raise ValueError("The Cookie header contains an invalid cookie name")
         cookies.setdefault(name, []).append(value)
 
     if cookies.get("li_at") != [li_at]:

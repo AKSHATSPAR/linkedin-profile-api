@@ -181,7 +181,7 @@ def test_secret_loader_requires_an_arn() -> None:
         f"li_at={'a' * 64}; JSESSIONID=ajax:session\r\nX-Test: value",
         f"li_at={'a' * 64}; JSESSIONID=ajax:session\tbad",
         f"li_at={'a' * 64}; li_at={'a' * 64}; JSESSIONID=ajax:session",
-        "x=" + ("a" * 16_384),
+        "x=" + ("a" * 32_768),
     ],
 )
 def test_rejects_invalid_complete_cookie_headers(cookie_header: str) -> None:

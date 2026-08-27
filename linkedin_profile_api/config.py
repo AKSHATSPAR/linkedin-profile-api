@@ -17,7 +17,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from .errors import CredentialsUnavailableError
 
 _COOKIE_NAME_PATTERN = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
-_MAX_COOKIE_HEADER_LENGTH = 16_384
+_MAX_COOKIE_HEADER_LENGTH = 32_768
 
 
 class Settings(BaseSettings):
