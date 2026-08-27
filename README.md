@@ -156,11 +156,11 @@ uv run uvicorn linkedin_profile_api.app:app --reload
 ```
 
 The session requires the `li_at` and `JSESSIONID` cookie values from a signed-in
-LinkedIn browser. A complete `Cookie` request header from that same session can
-also be supplied when LinkedIn expects more browser-session context. The two
-required values must match their counterparts in the complete header. Prefer a
-separate low-privilege session and revoke it after evaluation. Do not paste any
-of these values into shell arguments, commits, logs, or issue trackers.
+LinkedIn browser. For deployment, the setup helper can import the request's
+complete `Cookie` value and reduce it to the small session cookie set used by the
+HTTP client. Prefer a separate low-privilege session and revoke it after
+evaluation. Do not paste session material into shell arguments, commits, logs,
+or issue trackers.
 
 Run the complete local verification suite:
 
@@ -187,15 +187,20 @@ The profile-route burst is one, the Lambda timeout is 15 seconds, and the
 LinkedIn work has a 10-second total deadline with no AWS retries or section
 fallbacks.
 
+Secrets Manager values are cached for five minutes per warm process, then
+refreshed under a concurrency lock. This keeps steady-state secret reads low
+while ensuring a rotated session is picked up without waiting for a new Lambda
+execution environment.
+
 Create a Secrets Manager secret with this JSON shape:
 
 ```json
-{"li_at":"REDACTED","jsessionid":"ajax:REDACTED","cookie_header":"OPTIONAL_REDACTED"}
+{"li_at":"REDACTED","jsessionid":"ajax:REDACTED","cookies":{"li_at":"REDACTED","JSESSIONID":"ajax:REDACTED","bcookie":"OPTIONAL_REDACTED"}}
 ```
 
-The interactive helper keeps all three values out of shell history and terminal
-output. On macOS, copy only the complete `Cookie` request-header value from
-Chrome DevTools, then let the helper read it directly from the clipboard:
+The helper keeps session material out of shell history and terminal output. On
+macOS, copy only the complete `Cookie` request-header value from Chrome DevTools,
+then let the helper read it directly from the clipboard:
 
 ```bash
 python3 scripts/configure_aws_secret.py \
@@ -205,10 +210,13 @@ python3 scripts/configure_aws_secret.py \
   --cookie-header-from-clipboard
 ```
 
-The helper still asks for `li_at` and `JSESSIONID` through hidden prompts and
-refuses to write unless those values match the complete header. It never prints
-the clipboard contents. Copy something non-sensitive after rotation so the
-header does not remain on the clipboard.
+In clipboard mode, the helper derives and validates `li_at` and `JSESSIONID`
+from the copied request; it does not ask you to enter them again. It discards
+advertising, analytics, experimentation, and short-lived bot-management state,
+then stores a small structured cookie map instead of the raw header. Runtime
+requests pass that map to HTTPX's cookie jar. The helper never prints clipboard
+contents. Copy something non-sensitive after rotation so the header does not
+remain on the clipboard.
 
 Then deploy:
 

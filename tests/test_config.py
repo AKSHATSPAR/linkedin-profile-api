@@ -28,7 +28,7 @@ async def test_environment_credentials_are_cached_and_can_be_cleared() -> None:
     assert first is second
     assert third is not first
     assert first.csrf_token == "ajax:session"
-    assert 'JSESSIONID="ajax:session"' in first.cookie_header
+    assert first.cookies == {"li_at": "a" * 64, "JSESSIONID": '"ajax:session"'}
 
 
 async def test_complete_cookie_header_is_validated_and_used() -> None:
@@ -45,11 +45,16 @@ async def test_complete_cookie_header_is_validated_and_used() -> None:
 
     credentials = await CredentialProvider(settings).get()
 
-    assert credentials.cookie_header == cookie_header
+    assert credentials.cookies == {
+        "bcookie": "v=2&example",
+        "li_at": li_at,
+        "JSESSIONID": '"ajax:session"',
+        "lang": "v=2&lang=en-us",
+    }
     assert credentials.csrf_token == "ajax:session"
 
 
-async def test_complete_cookie_header_preserves_repeated_optional_cookies() -> None:
+async def test_complete_cookie_header_discards_unrelated_cookies() -> None:
     li_at = "a" * 64
     cookie_header = f"optional=one; li_at={li_at}; optional=two; JSESSIONID=ajax:session"
 
@@ -62,10 +67,10 @@ async def test_complete_cookie_header_preserves_repeated_optional_cookies() -> N
         )
     ).get()
 
-    assert credentials.cookie_header == cookie_header
+    assert credentials.cookies == {"li_at": li_at, "JSESSIONID": "ajax:session"}
 
 
-async def test_complete_cookie_header_preserves_valueless_optional_tokens() -> None:
+async def test_complete_cookie_header_ignores_valueless_optional_tokens() -> None:
     li_at = "a" * 64
     cookie_header = f"legacy_flag; li_at={li_at}; JSESSIONID=ajax:session"
 
@@ -78,7 +83,7 @@ async def test_complete_cookie_header_preserves_valueless_optional_tokens() -> N
         )
     ).get()
 
-    assert credentials.cookie_header == cookie_header
+    assert credentials.cookies == {"li_at": li_at, "JSESSIONID": "ajax:session"}
 
 
 async def test_secrets_manager_load_is_coalesced_and_cached(monkeypatch: Any) -> None:
@@ -94,9 +99,11 @@ async def test_secrets_manager_load_is_coalesced_and_cached(monkeypatch: Any) ->
                     {
                         "li_at": "b" * 64,
                         "jsessionid": '"ajax:from-secret"',
-                        "cookie_header": (
-                            f'li_at={"b" * 64}; JSESSIONID="ajax:from-secret"; lang=en-us'
-                        ),
+                        "cookies": {
+                            "li_at": "b" * 64,
+                            "JSESSIONID": '"ajax:from-secret"',
+                            "lang": "en-us",
+                        },
                     }
                 )
             }
@@ -116,7 +123,46 @@ async def test_secrets_manager_load_is_coalesced_and_cached(monkeypatch: Any) ->
 
     assert calls == 1
     assert all(item.li_at == "b" * 64 for item in credentials)
-    assert all("lang=en-us" in item.cookie_header for item in credentials)
+    assert all(item.cookies["lang"] == "en-us" for item in credentials)
+
+
+async def test_secrets_manager_credentials_refresh_after_ttl(monkeypatch: Any) -> None:
+    calls = 0
+    now = 100.0
+
+    class FakeSecretsManager:
+        def get_secret_value(self, *, SecretId: str) -> dict[str, str]:
+            nonlocal calls
+            del SecretId
+            calls += 1
+            marker = "b" if calls == 1 else "c"
+            return {
+                "SecretString": json.dumps({"li_at": marker * 64, "jsessionid": "ajax:from-secret"})
+            }
+
+    monkeypatch.setattr(config, "monotonic", lambda: now)
+    monkeypatch.setattr(
+        config.boto3,
+        "client",
+        lambda service, region_name: FakeSecretsManager(),
+    )
+    provider = CredentialProvider(
+        Settings(
+            _env_file=None,
+            linkedin_secret_arn="arn:aws:secretsmanager:ap-south-1:123:secret:test",
+            linkedin_secret_cache_ttl_seconds=30,
+        )
+    )
+
+    first = await provider.get()
+    now += 29
+    cached = await provider.get()
+    now += 2
+    refreshed = await provider.get()
+
+    assert first is cached
+    assert refreshed.li_at == "c" * 64
+    assert calls == 2
 
 
 async def test_blank_environment_values_fall_back_to_secrets_manager(monkeypatch: Any) -> None:
@@ -201,8 +247,22 @@ def test_secret_loader_requires_an_arn() -> None:
     ],
 )
 def test_rejects_invalid_complete_cookie_headers(cookie_header: str) -> None:
-    with pytest.raises(CredentialsUnavailableError, match="Cookie header"):
-        CredentialProvider._validate("a" * 64, "ajax:session", cookie_header)
+    with pytest.raises(CredentialsUnavailableError):
+        CredentialProvider._validate(
+            "a" * 64,
+            "ajax:session",
+            cookie_header=cookie_header,
+        )
+
+
+def test_rejects_conflicting_cookie_secret_formats() -> None:
+    with pytest.raises(CredentialsUnavailableError, match="conflicting"):
+        CredentialProvider._validate(
+            "a" * 64,
+            "ajax:session",
+            cookies={"li_at": "a" * 64, "JSESSIONID": "ajax:session"},
+            cookie_header=f"li_at={'a' * 64}; JSESSIONID=ajax:session",
+        )
 
 
 def test_secrets_manager_sdk_failures_are_sanitized(monkeypatch: Any) -> None:

@@ -5,12 +5,10 @@ from __future__ import annotations
 import argparse
 import getpass
 import json
-import re
 import subprocess
 import sys
 
-COOKIE_NAME_PATTERN = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
-MAX_COOKIE_HEADER_LENGTH = 32_768
+from linkedin_profile_api.session_cookies import SessionCookieError, import_cookie_header
 
 
 def parse_args() -> argparse.Namespace:
@@ -38,56 +36,16 @@ def require_value(prompt: str) -> str:
     return value
 
 
-def validate_cookie_header(header: str, *, li_at: str, jsessionid: str) -> str:
-    header = header.strip()
-    if header.casefold().startswith("cookie:"):
-        header = header.split(":", 1)[1].strip()
-    if not header:
-        raise ValueError("The Cookie header is empty")
-    if len(header) > MAX_COOKIE_HEADER_LENGTH:
-        raise ValueError(
-            "The Cookie header is too long "
-            f"({len(header)} characters; maximum {MAX_COOKIE_HEADER_LENGTH})"
-        )
-    if "\r" in header or "\n" in header:
-        raise ValueError("The Cookie header contains multiple lines; copy only the Cookie value")
-    if any(ord(character) < 0x20 or ord(character) > 0x7E for character in header):
-        raise ValueError("The Cookie header contains non-printable or non-ASCII text")
-
-    cookies: dict[str, list[str]] = {}
-    for segment in header.split(";"):
-        pair = segment.strip()
-        if not pair:
-            continue
-        if "=" not in pair:
-            if not COOKIE_NAME_PATTERN.fullmatch(pair):
-                raise ValueError("The Cookie header contains an invalid valueless cookie token")
-            continue
-        name, value = pair.split("=", 1)
-        name = name.strip()
-        value = value.strip()
-        if not COOKIE_NAME_PATTERN.fullmatch(name):
-            raise ValueError("The Cookie header contains an invalid cookie name")
-        cookies.setdefault(name, []).append(value)
-
-    if cookies.get("li_at") != [li_at]:
-        raise ValueError("The Cookie header does not match li_at")
-    cookie_jsessionids = cookies.get("JSESSIONID", [])
-    if len(cookie_jsessionids) != 1 or cookie_jsessionids[0].strip('"') != jsessionid.strip('"'):
-        raise ValueError("The Cookie header does not match JSESSIONID")
-    return header
-
-
-def optional_cookie_header(*, li_at: str, jsessionid: str) -> str | None:
+def optional_session_cookies(*, li_at: str, jsessionid: str) -> dict[str, str] | None:
     header = getpass.getpass(
         "LinkedIn full Cookie header (hidden, optional; Enter to skip): "
     ).strip()
     if not header:
         return None
-    return validate_cookie_header(header, li_at=li_at, jsessionid=jsessionid)
+    return import_cookie_header(header, li_at=li_at, jsessionid=jsessionid)
 
 
-def clipboard_cookie_header(*, li_at: str, jsessionid: str) -> str:
+def clipboard_session_cookies() -> dict[str, str]:
     try:
         result = subprocess.run(
             ["pbpaste"],
@@ -96,10 +54,10 @@ def clipboard_cookie_header(*, li_at: str, jsessionid: str) -> str:
             check=False,
         )
     except OSError as exc:
-        raise ValueError("The macOS clipboard could not be read") from exc
+        raise SessionCookieError("The macOS clipboard could not be read") from exc
     if result.returncode != 0 or not result.stdout.strip():
-        raise ValueError("The macOS clipboard does not contain a Cookie header")
-    return validate_cookie_header(result.stdout, li_at=li_at, jsessionid=jsessionid)
+        raise SessionCookieError("The macOS clipboard does not contain a Cookie header")
+    return import_cookie_header(result.stdout)
 
 
 def aws(
@@ -125,31 +83,30 @@ def main() -> int:
         )
         return 2
 
-    li_at = require_value("LinkedIn li_at (hidden): ")
-    jsessionid = require_value("LinkedIn JSESSIONID (hidden): ")
-    normalized_jsessionid = jsessionid.strip('"')
-    if len(li_at) < 20 or not normalized_jsessionid.startswith("ajax:"):
-        print("The supplied session values do not have the expected shape.", file=sys.stderr)
-        return 2
-
     try:
         if args.cookie_header_from_clipboard:
-            cookie_header = clipboard_cookie_header(
-                li_at=li_at,
-                jsessionid=normalized_jsessionid,
-            )
+            session_cookies = clipboard_session_cookies()
+            li_at = session_cookies["li_at"]
+            normalized_jsessionid = session_cookies["JSESSIONID"].strip('"')
         else:
-            cookie_header = optional_cookie_header(
+            li_at = require_value("LinkedIn li_at (hidden): ")
+            jsessionid = require_value("LinkedIn JSESSIONID (hidden): ")
+            normalized_jsessionid = jsessionid.strip('"')
+            if len(li_at) < 20 or not normalized_jsessionid.startswith("ajax:"):
+                raise SessionCookieError(
+                    "The supplied session values do not have the expected shape"
+                )
+            session_cookies = optional_session_cookies(
                 li_at=li_at,
                 jsessionid=normalized_jsessionid,
             )
-    except ValueError as exc:
+    except (SessionCookieError, ValueError) as exc:
         print(str(exc), file=sys.stderr)
         return 2
 
     secret_payload = {"li_at": li_at, "jsessionid": normalized_jsessionid}
-    if cookie_header is not None:
-        secret_payload["cookie_header"] = cookie_header
+    if session_cookies is not None:
+        secret_payload["cookies"] = session_cookies
     secret_string = json.dumps(secret_payload)
     current = aws(
         "secretsmanager",

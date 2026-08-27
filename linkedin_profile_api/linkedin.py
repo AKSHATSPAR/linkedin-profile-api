@@ -158,7 +158,6 @@ class LinkedInClient:
             "accept": "application/vnd.linkedin.normalized+json+2.1",
             "accept-language": "en-US,en;q=0.9",
             "csrf-token": credentials.csrf_token,
-            "cookie": credentials.cookie_header,
             "referer": f"https://www.linkedin.com/in/{public_identifier}/",
             "sec-fetch-dest": "empty",
             "sec-fetch-mode": "cors",
@@ -174,6 +173,7 @@ class LinkedInClient:
                 async with httpx.AsyncClient(
                     base_url=self.BASE_URL,
                     headers=headers,
+                    cookies=credentials.cookies,
                     timeout=timeout,
                     follow_redirects=False,
                     transport=self._transport,

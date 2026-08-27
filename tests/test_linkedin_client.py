@@ -75,16 +75,21 @@ async def test_tries_a_second_decoration_version(dash_profile: dict[str, Any]) -
     assert "FullProfileWithEntities-91" in str(calls[1].url)
 
 
-async def test_sends_complete_cookie_header_unchanged(
+async def test_sends_allowlisted_cookies_through_cookie_jar(
     dash_profile: dict[str, Any],
 ) -> None:
     li_at = "a" * 64
     cookie_header = (
-        f'bcookie=browser-context; li_at={li_at}; JSESSIONID="ajax:session-id"; lang=en-us'
+        f"analytics=discard; bcookie=browser-context; li_at={li_at}; "
+        'JSESSIONID="ajax:session-id"; lang=en-us'
     )
 
     async def handler(request: httpx.Request) -> httpx.Response:
-        assert request.headers["cookie"] == cookie_header
+        assert "analytics" not in request.headers["cookie"]
+        assert "bcookie=browser-context" in request.headers["cookie"]
+        assert f"li_at={li_at}" in request.headers["cookie"]
+        assert 'JSESSIONID="ajax:session-id"' in request.headers["cookie"]
+        assert "lang=en-us" in request.headers["cookie"]
         return httpx.Response(
             200,
             headers={"content-type": "application/json"},

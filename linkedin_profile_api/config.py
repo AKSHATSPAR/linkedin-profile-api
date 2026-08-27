@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import json
-import re
 from dataclasses import dataclass
 from functools import lru_cache
+from time import monotonic
 from typing import Any
 
 import boto3
@@ -15,9 +15,7 @@ from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from .errors import CredentialsUnavailableError
-
-_COOKIE_NAME_PATTERN = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
-_MAX_COOKIE_HEADER_LENGTH = 32_768
+from .session_cookies import SessionCookieError, import_cookie_header, validate_cookie_map
 
 
 class Settings(BaseSettings):
@@ -36,6 +34,7 @@ class Settings(BaseSettings):
     linkedin_jsessionid: SecretStr | None = None
     linkedin_cookie_header: SecretStr | None = None
     linkedin_secret_arn: str | None = None
+    linkedin_secret_cache_ttl_seconds: int = Field(default=300, ge=30, le=3600)
     linkedin_user_agent: str = (
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -61,20 +60,20 @@ class Settings(BaseSettings):
 class LinkedInCredentials:
     li_at: str
     jsessionid: str
-    full_cookie_header: str | None = None
+    session_cookies: tuple[tuple[str, str], ...] = ()
 
     @property
     def csrf_token(self) -> str:
         return self.jsessionid.strip('"')
 
     @property
-    def cookie_header(self) -> str:
-        if self.full_cookie_header is not None:
-            return self.full_cookie_header
+    def cookies(self) -> dict[str, str]:
+        if self.session_cookies:
+            return dict(self.session_cookies)
         quoted_jsessionid = self.jsessionid
         if not quoted_jsessionid.startswith('"'):
             quoted_jsessionid = f'"{quoted_jsessionid}"'
-        return f"li_at={self.li_at}; JSESSIONID={quoted_jsessionid}"
+        return {"li_at": self.li_at, "JSESSIONID": quoted_jsessionid}
 
 
 class CredentialProvider:
@@ -83,25 +82,33 @@ class CredentialProvider:
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
         self._cached: LinkedInCredentials | None = None
+        self._cache_expires_at = 0.0
         self._lock = asyncio.Lock()
 
     async def get(self) -> LinkedInCredentials:
-        if self._cached is not None:
+        if self._cached is not None and monotonic() < self._cache_expires_at:
             return self._cached
 
         async with self._lock:
-            if self._cached is not None:
+            if self._cached is not None and monotonic() < self._cache_expires_at:
                 return self._cached
             credentials = self._from_environment()
-            if credentials is None and self._settings.linkedin_secret_arn:
+            if credentials is not None:
+                cache_expires_at = float("inf")
+            elif self._settings.linkedin_secret_arn:
                 credentials = await asyncio.to_thread(self._from_secrets_manager)
+                cache_expires_at = monotonic() + self._settings.linkedin_secret_cache_ttl_seconds
+            else:
+                cache_expires_at = 0.0
             if credentials is None:
                 raise CredentialsUnavailableError("LinkedIn credentials have not been configured")
             self._cached = credentials
+            self._cache_expires_at = cache_expires_at
             return credentials
 
     def clear(self) -> None:
         self._cached = None
+        self._cache_expires_at = 0.0
 
     def _from_environment(self) -> LinkedInCredentials | None:
         li_at = self._settings.linkedin_li_at
@@ -114,7 +121,11 @@ class CredentialProvider:
             return None
         cookie_header = self._settings.linkedin_cookie_header
         cookie_header_value = cookie_header.get_secret_value() if cookie_header else None
-        return self._validate(li_at_value, jsessionid_value, cookie_header_value)
+        return self._validate(
+            li_at_value,
+            jsessionid_value,
+            cookie_header=cookie_header_value,
+        )
 
     def _from_secrets_manager(self) -> LinkedInCredentials:
         secret_arn = self._settings.linkedin_secret_arn
@@ -145,13 +156,16 @@ class CredentialProvider:
         return self._validate(
             secret.get("li_at"),
             secret.get("jsessionid"),
-            secret.get("cookie_header"),
+            cookies=secret.get("cookies"),
+            cookie_header=secret.get("cookie_header"),
         )
 
     @staticmethod
     def _validate(
         li_at: Any,
         jsessionid: Any,
+        *,
+        cookies: Any = None,
         cookie_header: Any = None,
     ) -> LinkedInCredentials:
         if not isinstance(li_at, str) or len(li_at.strip()) < 20:
@@ -160,64 +174,34 @@ class CredentialProvider:
             raise CredentialsUnavailableError("The LinkedIn JSESSIONID value is invalid")
         normalized_li_at = li_at.strip()
         normalized_jsessionid = jsessionid.strip()
-        normalized_cookie_header = CredentialProvider._validate_cookie_header(
-            cookie_header,
-            li_at=normalized_li_at,
-            jsessionid=normalized_jsessionid,
-        )
+        try:
+            if cookies is not None:
+                if cookie_header is not None:
+                    raise SessionCookieError(
+                        "The LinkedIn secret contains conflicting cookie formats"
+                    )
+                normalized_cookies = validate_cookie_map(
+                    cookies,
+                    li_at=normalized_li_at,
+                    jsessionid=normalized_jsessionid,
+                )
+            elif cookie_header is not None:
+                if not isinstance(cookie_header, str):
+                    raise SessionCookieError("The LinkedIn Cookie header is invalid")
+                normalized_cookies = import_cookie_header(
+                    cookie_header,
+                    li_at=normalized_li_at,
+                    jsessionid=normalized_jsessionid,
+                )
+            else:
+                normalized_cookies = {}
+        except SessionCookieError as exc:
+            raise CredentialsUnavailableError(str(exc)) from exc
         return LinkedInCredentials(
             li_at=normalized_li_at,
             jsessionid=normalized_jsessionid,
-            full_cookie_header=normalized_cookie_header,
+            session_cookies=tuple(normalized_cookies.items()),
         )
-
-    @staticmethod
-    def _validate_cookie_header(
-        value: Any,
-        *,
-        li_at: str,
-        jsessionid: str,
-    ) -> str | None:
-        if value is None:
-            return None
-        if not isinstance(value, str):
-            raise CredentialsUnavailableError("The LinkedIn Cookie header is invalid")
-        header = value.strip()
-        if not header:
-            return None
-        if len(header) > _MAX_COOKIE_HEADER_LENGTH or any(
-            ord(character) < 0x20 or ord(character) > 0x7E for character in header
-        ):
-            raise CredentialsUnavailableError("The LinkedIn Cookie header is invalid")
-
-        cookies: dict[str, list[str]] = {}
-        for segment in header.split(";"):
-            pair = segment.strip()
-            if not pair:
-                continue
-            if "=" not in pair:
-                if not _COOKIE_NAME_PATTERN.fullmatch(pair):
-                    raise CredentialsUnavailableError("The LinkedIn Cookie header is invalid")
-                continue
-            name, cookie_value = pair.split("=", 1)
-            name = name.strip()
-            cookie_value = cookie_value.strip()
-            if not _COOKIE_NAME_PATTERN.fullmatch(name):
-                raise CredentialsUnavailableError("The LinkedIn Cookie header is invalid")
-            cookies.setdefault(name, []).append(cookie_value)
-
-        if cookies.get("li_at") != [li_at]:
-            raise CredentialsUnavailableError(
-                "The LinkedIn Cookie header does not match the li_at value"
-            )
-        header_jsessionids = cookies.get("JSESSIONID", [])
-        if len(header_jsessionids) != 1 or header_jsessionids[0].strip('"') != jsessionid.strip(
-            '"'
-        ):
-            raise CredentialsUnavailableError(
-                "The LinkedIn Cookie header does not match the JSESSIONID value"
-            )
-        return header
 
 
 @lru_cache
