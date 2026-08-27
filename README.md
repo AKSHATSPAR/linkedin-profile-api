@@ -75,9 +75,10 @@ contain several entries are always returned as arrays:
 ```
 
 Fields not present in LinkedIn's response are omitted from HTTP responses.
-Unavailable sections remain empty arrays. Optional upstream section failures are
-reported through `meta.partial` and `meta.warnings` instead of discarding an
-otherwise useful profile.
+Unavailable sections remain empty arrays. `meta.partial` means that an attempted
+optional section request failed; it is not a claim that every field visible in
+LinkedIn's interface was returned. Some fields live behind separate page requests
+and can be absent even when `partial` is `false`.
 
 ## Design
 
@@ -85,7 +86,7 @@ otherwise useful profile.
 caller
   │  HTTPS, strict 512-character linkedin.com/in/... URL
   ▼
-API Gateway ── profile-route burst 1, rate 0.05 requests/second
+API Gateway ── GET/POST only, access logs, burst 1, rate 0.05 requests/second
   ▼
 Lambda / FastAPI ── 4 KiB body cap ── peer-IP limiter
   │
@@ -174,18 +175,19 @@ call limits, profile-identity mismatches, every returned section, caching and
 concurrency, Secrets Manager failures, stable API errors, and the Lambda entry
 point. A separate architecture test prevents browser-automation packages from
 entering the runtime. CI requires at least 95% coverage and also checks formatting,
-linting, strict types, locked dependencies, and reproducible production exports.
+linting, strict types, locked dependencies, reproducible production exports, SAM
+template validation, and a complete Lambda artifact build.
 
 ## AWS deployment
 
 The included SAM template deploys a public HTTP API, a 256 MiB ARM64 Lambda, and
 a least-privilege runtime permission that can read only the selected secret. The
-profile route has a shared burst of one and replenishes at 0.05 requests per
-second; other documentation and health routes retain a one-request-per-second
-default.
-The profile-route burst is one, the Lambda timeout is 15 seconds, and the
-LinkedIn work has a 10-second total deadline with no AWS retries or section
-fallbacks.
+GET and POST profile routes each have a burst of one and replenish at 0.05 requests
+per second; documentation and health routes retain a one-request-per-second
+default. Other methods are not routed to Lambda. Privacy-safe API access logs and
+their log group are retained for 14 days; the reference deployment also applies
+14-day retention to Lambda logs. The Lambda timeout is 15 seconds, and the LinkedIn
+work has a 10-second total deadline with no AWS retries or section fallbacks.
 
 Secrets Manager values are cached for five minutes per warm process, then
 refreshed under a concurrency lock. This keeps steady-state secret reads low
@@ -282,6 +284,10 @@ egress. In that case the API returns a sanitized authentication error and the
 operator must refresh the browser-derived session; it does not follow checkpoint
 redirects. Values loaded by separate page requests, such as some relationship
 counts, may be absent when LinkedIn omits them from the primary profile payload.
+
+The reference endpoint is intentionally unauthenticated so an evaluator can call
+it directly. The low route throttle limits exposure but is not a hard quota; add
+caller authentication before using the service as a long-lived public product.
 
 The cache, single-flight coordinator, and peer limiter are deliberately
 process-local. API Gateway provides the deployment-wide throttle; multiple local

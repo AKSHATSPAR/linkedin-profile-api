@@ -37,3 +37,7 @@ jobs:
         run: uv run --frozen pip-audit
       - name: Test
         run: uv run --frozen pytest --cov=linkedin_profile_api --cov-report=term-missing --cov-fail-under=95
+      - name: Validate SAM template
+        run: sam validate --lint
+      - name: Build Lambda artifact
+        run: sam build

@@ -48,6 +48,9 @@ async def test_profile_endpoint_and_cache(dash_profile: dict[str, Any]) -> None:
     assert first.status_code == 200
     assert first.json()["profile"]["full_name"] == "Ada Lovelace"
     assert first.headers["cache-control"] == "no-store"
+    assert first.headers["x-frame-options"] == "DENY"
+    assert first.headers["referrer-policy"] == "no-referrer"
+    assert first.headers["permissions-policy"] == "camera=(), microphone=(), geolocation=()"
     assert second.json()["meta"]["cached"] is True
     assert len(requests) == 1
     assert requests[0].headers["csrf-token"] == "ajax:1234567890"

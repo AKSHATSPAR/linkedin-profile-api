@@ -32,15 +32,28 @@ Globals:
         MAX_REQUEST_BODY_BYTES: "4096"
 
 Resources:
+  ApiAccessLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/http-api/${AWS::StackName}
+      RetentionInDays: 14
+
   ProfileApi:
     Type: AWS::Serverless::HttpApi
     Properties:
       StageName: $default
+      AccessLogSettings:
+        DestinationArn: !GetAtt ApiAccessLogGroup.Arn
+        Format: >-
+          {"requestId":"$context.requestId","routeKey":"$context.routeKey","method":"$context.httpMethod","status":"$context.status","responseLength":"$context.responseLength","responseLatency":"$context.responseLatency","integrationLatency":"$context.integrationLatency"}
       DefaultRouteSettings:
         ThrottlingBurstLimit: 2
         ThrottlingRateLimit: 1
       RouteSettings:
-        "ANY /v1/profiles":
+        "GET /v1/profiles":
+          ThrottlingBurstLimit: 1
+          ThrottlingRateLimit: 0.05
+        "POST /v1/profiles":
           ThrottlingBurstLimit: 1
           ThrottlingRateLimit: 0.05
 
@@ -57,26 +70,54 @@ Resources:
         - AWSSecretsManagerGetSecretValuePolicy:
             SecretArn: !Ref LinkedInSecretArn
       Events:
-        Root:
+        RootGet:
           Type: HttpApi
           Properties:
             ApiId: !Ref ProfileApi
             Path: /
-            Method: ANY
+            Method: GET
             PayloadFormatVersion: "2.0"
-        Proxy:
+        HealthGet:
           Type: HttpApi
           Properties:
             ApiId: !Ref ProfileApi
-            Path: /{proxy+}
-            Method: ANY
+            Path: /health
+            Method: GET
             PayloadFormatVersion: "2.0"
-        ProfileRequest:
+        DocsGet:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ProfileApi
+            Path: /docs
+            Method: GET
+            PayloadFormatVersion: "2.0"
+        RedocGet:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ProfileApi
+            Path: /redoc
+            Method: GET
+            PayloadFormatVersion: "2.0"
+        OpenApiGet:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ProfileApi
+            Path: /openapi.json
+            Method: GET
+            PayloadFormatVersion: "2.0"
+        ProfileGet:
           Type: HttpApi
           Properties:
             ApiId: !Ref ProfileApi
             Path: /v1/profiles
-            Method: ANY
+            Method: GET
+            PayloadFormatVersion: "2.0"
+        ProfilePost:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ProfileApi
+            Path: /v1/profiles
+            Method: POST
             PayloadFormatVersion: "2.0"
 
 Outputs:

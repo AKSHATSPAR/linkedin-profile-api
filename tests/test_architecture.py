@@ -33,3 +33,13 @@ def test_runtime_has_no_browser_automation_dependency_or_import() -> None:
                 imported_roots.add(node.module.split(".", 1)[0])
 
     assert imported_roots.isdisjoint(BROWSER_AUTOMATION_PACKAGES)
+
+
+def test_sam_routes_only_intended_http_methods_and_enables_safe_access_logs() -> None:
+    template = (PROJECT_ROOT / "template.yaml").read_text()
+
+    assert "Method: ANY" not in template
+    assert '"GET /v1/profiles"' in template
+    assert '"POST /v1/profiles"' in template
+    assert "AccessLogSettings:" in template
+    assert '"sourceIp"' not in template
