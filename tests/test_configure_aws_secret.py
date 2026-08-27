@@ -3,11 +3,28 @@ from __future__ import annotations
 import argparse
 import json
 import subprocess
+import sys
+from pathlib import Path
 from typing import Any
 
 import pytest
 
 from scripts import configure_aws_secret
+
+
+def test_direct_script_invocation_can_import_project(tmp_path: Path) -> None:
+    script = Path(configure_aws_secret.__file__).resolve()
+
+    result = subprocess.run(
+        [sys.executable, str(script), "--help"],
+        cwd=tmp_path,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    assert "--cookie-header-from-clipboard" in result.stdout
 
 
 def test_clipboard_session_cookies_are_read_without_echoing(monkeypatch: Any) -> None:

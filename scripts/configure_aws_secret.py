@@ -7,8 +7,18 @@ import getpass
 import json
 import subprocess
 import sys
+from pathlib import Path
 
-from linkedin_profile_api.session_cookies import SessionCookieError, import_cookie_header
+# Support the documented ``python3 scripts/configure_aws_secret.py`` invocation
+# without requiring the project to be installed into the active interpreter.
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from linkedin_profile_api.session_cookies import (  # noqa: E402
+    SessionCookieError,
+    import_cookie_header,
+)
 
 
 def parse_args() -> argparse.Namespace:
