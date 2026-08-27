@@ -31,6 +31,40 @@ async def test_environment_credentials_are_cached_and_can_be_cleared() -> None:
     assert 'JSESSIONID="ajax:session"' in first.cookie_header
 
 
+async def test_complete_cookie_header_is_validated_and_used() -> None:
+    li_at = "a" * 64
+    cookie_header = (
+        f'bcookie=v=2&example; li_at={li_at}; JSESSIONID="ajax:session"; lang=v=2&lang=en-us'
+    )
+    settings = Settings(
+        _env_file=None,
+        linkedin_li_at=li_at,
+        linkedin_jsessionid="ajax:session",
+        linkedin_cookie_header=cookie_header,
+    )
+
+    credentials = await CredentialProvider(settings).get()
+
+    assert credentials.cookie_header == cookie_header
+    assert credentials.csrf_token == "ajax:session"
+
+
+async def test_complete_cookie_header_preserves_repeated_optional_cookies() -> None:
+    li_at = "a" * 64
+    cookie_header = f"optional=one; li_at={li_at}; optional=two; JSESSIONID=ajax:session"
+
+    credentials = await CredentialProvider(
+        Settings(
+            _env_file=None,
+            linkedin_li_at=li_at,
+            linkedin_jsessionid="ajax:session",
+            linkedin_cookie_header=cookie_header,
+        )
+    ).get()
+
+    assert credentials.cookie_header == cookie_header
+
+
 async def test_secrets_manager_load_is_coalesced_and_cached(monkeypatch: Any) -> None:
     calls = 0
 
@@ -40,7 +74,15 @@ async def test_secrets_manager_load_is_coalesced_and_cached(monkeypatch: Any) ->
             assert SecretId == "arn:aws:secretsmanager:ap-south-1:123:secret:test"
             calls += 1
             return {
-                "SecretString": json.dumps({"li_at": "b" * 64, "jsessionid": '"ajax:from-secret"'})
+                "SecretString": json.dumps(
+                    {
+                        "li_at": "b" * 64,
+                        "jsessionid": '"ajax:from-secret"',
+                        "cookie_header": (
+                            f'li_at={"b" * 64}; JSESSIONID="ajax:from-secret"; lang=en-us'
+                        ),
+                    }
+                )
             }
 
     monkeypatch.setattr(
@@ -58,6 +100,7 @@ async def test_secrets_manager_load_is_coalesced_and_cached(monkeypatch: Any) ->
 
     assert calls == 1
     assert all(item.li_at == "b" * 64 for item in credentials)
+    assert all("lang=en-us" in item.cookie_header for item in credentials)
 
 
 async def test_blank_environment_values_fall_back_to_secrets_manager(monkeypatch: Any) -> None:
@@ -128,6 +171,22 @@ def test_secret_loader_requires_an_arn() -> None:
 
     with pytest.raises(CredentialsUnavailableError, match="No LinkedIn secret ARN"):
         provider._from_secrets_manager()
+
+
+@pytest.mark.parametrize(
+    "cookie_header",
+    [
+        "li_at=wrong; JSESSIONID=ajax:session",
+        f"li_at={'a' * 64}; JSESSIONID=ajax:wrong",
+        f"li_at={'a' * 64}; JSESSIONID=ajax:session\r\nX-Test: value",
+        f"li_at={'a' * 64}; JSESSIONID=ajax:session\tbad",
+        f"li_at={'a' * 64}; li_at={'a' * 64}; JSESSIONID=ajax:session",
+        "x=" + ("a" * 16_384),
+    ],
+)
+def test_rejects_invalid_complete_cookie_headers(cookie_header: str) -> None:
+    with pytest.raises(CredentialsUnavailableError, match="Cookie header"):
+        CredentialProvider._validate("a" * 64, "ajax:session", cookie_header)
 
 
 def test_secrets_manager_sdk_failures_are_sanitized(monkeypatch: Any) -> None:

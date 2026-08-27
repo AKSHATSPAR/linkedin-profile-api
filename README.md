@@ -156,9 +156,11 @@ uv run uvicorn linkedin_profile_api.app:app --reload
 ```
 
 The session requires the `li_at` and `JSESSIONID` cookie values from a signed-in
-LinkedIn browser. Prefer a separate low-privilege session and revoke it after
-evaluation. Do not paste these values into shell arguments, commits, logs, or
-issue trackers.
+LinkedIn browser. A complete `Cookie` request header from that same session can
+also be supplied when LinkedIn expects more browser-session context. The two
+required values must match their counterparts in the complete header. Prefer a
+separate low-privilege session and revoke it after evaluation. Do not paste any
+of these values into shell arguments, commits, logs, or issue trackers.
 
 Run the complete local verification suite:
 
@@ -188,7 +190,7 @@ fallbacks.
 Create a Secrets Manager secret with this JSON shape:
 
 ```json
-{"li_at":"REDACTED","jsessionid":"ajax:REDACTED"}
+{"li_at":"REDACTED","jsessionid":"ajax:REDACTED","cookie_header":"OPTIONAL_REDACTED"}
 ```
 
 Then deploy:
@@ -249,6 +251,12 @@ challenge implementation: use it only with authorization, keep request volume
 low, avoid collecting unnecessary personal data, and remove the session after
 the evaluation window. It intentionally does not attempt CAPTCHA bypass,
 credential theft, or access-control circumvention.
+
+LinkedIn may challenge a valid browser session when it is reused from cloud
+egress. In that case the API returns a sanitized authentication error and the
+operator must refresh the browser-derived session; it does not follow checkpoint
+redirects. Values loaded by separate page requests, such as some relationship
+counts, may be absent when LinkedIn omits them from the primary profile payload.
 
 The cache, single-flight coordinator, and peer limiter are deliberately
 process-local. API Gateway provides the deployment-wide throttle; multiple local

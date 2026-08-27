@@ -5,8 +5,12 @@ from __future__ import annotations
 import argparse
 import getpass
 import json
+import re
 import subprocess
 import sys
+
+COOKIE_NAME_PATTERN = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
+MAX_COOKIE_HEADER_LENGTH = 16_384
 
 
 def parse_args() -> argparse.Namespace:
@@ -27,6 +31,39 @@ def require_value(prompt: str) -> str:
     if not value:
         raise ValueError("A value is required")
     return value
+
+
+def optional_cookie_header(*, li_at: str, jsessionid: str) -> str | None:
+    header = getpass.getpass(
+        "LinkedIn full Cookie header (hidden, optional; Enter to skip): "
+    ).strip()
+    if not header:
+        return None
+    if len(header) > MAX_COOKIE_HEADER_LENGTH or any(
+        ord(character) < 0x20 or ord(character) > 0x7E for character in header
+    ):
+        raise ValueError("The Cookie header is invalid")
+
+    cookies: dict[str, list[str]] = {}
+    for segment in header.split(";"):
+        pair = segment.strip()
+        if not pair:
+            continue
+        if "=" not in pair:
+            raise ValueError("The Cookie header is invalid")
+        name, value = pair.split("=", 1)
+        name = name.strip()
+        value = value.strip()
+        if not COOKIE_NAME_PATTERN.fullmatch(name):
+            raise ValueError("The Cookie header is invalid")
+        cookies.setdefault(name, []).append(value)
+
+    if cookies.get("li_at") != [li_at]:
+        raise ValueError("The Cookie header does not match li_at")
+    cookie_jsessionids = cookies.get("JSESSIONID", [])
+    if len(cookie_jsessionids) != 1 or cookie_jsessionids[0].strip('"') != jsessionid.strip('"'):
+        raise ValueError("The Cookie header does not match JSESSIONID")
+    return header
 
 
 def aws(
@@ -59,7 +96,19 @@ def main() -> int:
         print("The supplied session values do not have the expected shape.", file=sys.stderr)
         return 2
 
-    secret_string = json.dumps({"li_at": li_at, "jsessionid": normalized_jsessionid})
+    try:
+        cookie_header = optional_cookie_header(
+            li_at=li_at,
+            jsessionid=normalized_jsessionid,
+        )
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+
+    secret_payload = {"li_at": li_at, "jsessionid": normalized_jsessionid}
+    if cookie_header is not None:
+        secret_payload["cookie_header"] = cookie_header
+    secret_string = json.dumps(secret_payload)
     current = aws(
         "secretsmanager",
         "describe-secret",

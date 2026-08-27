@@ -156,8 +156,13 @@ class LinkedInClient:
         credentials = await self._credential_provider.get()
         headers = {
             "accept": "application/vnd.linkedin.normalized+json+2.1",
+            "accept-language": "en-US,en;q=0.9",
             "csrf-token": credentials.csrf_token,
             "cookie": credentials.cookie_header,
+            "referer": f"https://www.linkedin.com/in/{public_identifier}/",
+            "sec-fetch-dest": "empty",
+            "sec-fetch-mode": "cors",
+            "sec-fetch-site": "same-origin",
             "user-agent": self._settings.linkedin_user_agent,
             "x-li-lang": "en_US",
             "x-restli-protocol-version": "2.0.0",

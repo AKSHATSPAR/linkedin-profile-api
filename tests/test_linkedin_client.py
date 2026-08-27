@@ -25,11 +25,13 @@ def _client(
     max_requests: int = 8,
     max_response_bytes: int = 2_000_000,
     total_timeout: float = 10,
+    cookie_header: str | None = None,
 ) -> LinkedInClient:
     settings = Settings(
         _env_file=None,
         linkedin_li_at="a" * 64,
         linkedin_jsessionid='"ajax:session-id"',
+        linkedin_cookie_header=cookie_header,
         linkedin_fetch_section_fallbacks=section_fallbacks,
         linkedin_max_retries=retries,
         linkedin_max_upstream_requests=max_requests,
@@ -50,6 +52,11 @@ async def test_tries_a_second_decoration_version(dash_profile: dict[str, Any]) -
         calls.append(request)
         assert request.headers["csrf-token"] == "ajax:session-id"
         assert 'JSESSIONID="ajax:session-id"' in request.headers["cookie"]
+        assert request.headers["accept-language"] == "en-US,en;q=0.9"
+        assert request.headers["referer"] == "https://www.linkedin.com/in/ada-lovelace/"
+        assert request.headers["sec-fetch-dest"] == "empty"
+        assert request.headers["sec-fetch-mode"] == "cors"
+        assert request.headers["sec-fetch-site"] == "same-origin"
         if len(calls) == 1:
             return httpx.Response(400, headers={"content-type": "application/json"})
         return httpx.Response(
@@ -66,6 +73,27 @@ async def test_tries_a_second_decoration_version(dash_profile: dict[str, Any]) -
     assert len(calls) == 2
     assert "FullProfileWithEntities-101" in str(calls[0].url)
     assert "FullProfileWithEntities-91" in str(calls[1].url)
+
+
+async def test_sends_complete_cookie_header_unchanged(
+    dash_profile: dict[str, Any],
+) -> None:
+    li_at = "a" * 64
+    cookie_header = (
+        f'bcookie=browser-context; li_at={li_at}; JSESSIONID="ajax:session-id"; lang=en-us'
+    )
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        assert request.headers["cookie"] == cookie_header
+        return httpx.Response(
+            200,
+            headers={"content-type": "application/json"},
+            json=dash_profile,
+        )
+
+    result = await _client(handler, cookie_header=cookie_header).fetch_profile("ada-lovelace")
+
+    assert result.documents[0]["included"] == dash_profile["included"]
 
 
 async def test_optional_sections_degrade_to_warnings(

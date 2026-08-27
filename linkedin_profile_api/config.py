@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any
@@ -14,6 +15,9 @@ from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from .errors import CredentialsUnavailableError
+
+_COOKIE_NAME_PATTERN = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
+_MAX_COOKIE_HEADER_LENGTH = 16_384
 
 
 class Settings(BaseSettings):
@@ -30,6 +34,7 @@ class Settings(BaseSettings):
 
     linkedin_li_at: SecretStr | None = None
     linkedin_jsessionid: SecretStr | None = None
+    linkedin_cookie_header: SecretStr | None = None
     linkedin_secret_arn: str | None = None
     linkedin_user_agent: str = (
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -56,6 +61,7 @@ class Settings(BaseSettings):
 class LinkedInCredentials:
     li_at: str
     jsessionid: str
+    full_cookie_header: str | None = None
 
     @property
     def csrf_token(self) -> str:
@@ -63,6 +69,8 @@ class LinkedInCredentials:
 
     @property
     def cookie_header(self) -> str:
+        if self.full_cookie_header is not None:
+            return self.full_cookie_header
         quoted_jsessionid = self.jsessionid
         if not quoted_jsessionid.startswith('"'):
             quoted_jsessionid = f'"{quoted_jsessionid}"'
@@ -104,7 +112,9 @@ class CredentialProvider:
         jsessionid_value = jsessionid.get_secret_value()
         if not li_at_value.strip() and not jsessionid_value.strip():
             return None
-        return self._validate(li_at_value, jsessionid_value)
+        cookie_header = self._settings.linkedin_cookie_header
+        cookie_header_value = cookie_header.get_secret_value() if cookie_header else None
+        return self._validate(li_at_value, jsessionid_value, cookie_header_value)
 
     def _from_secrets_manager(self) -> LinkedInCredentials:
         secret_arn = self._settings.linkedin_secret_arn
@@ -132,15 +142,80 @@ class CredentialProvider:
             ) from exc
         if not isinstance(secret, dict):
             raise CredentialsUnavailableError("The configured LinkedIn secret has an invalid shape")
-        return self._validate(secret.get("li_at"), secret.get("jsessionid"))
+        return self._validate(
+            secret.get("li_at"),
+            secret.get("jsessionid"),
+            secret.get("cookie_header"),
+        )
 
     @staticmethod
-    def _validate(li_at: Any, jsessionid: Any) -> LinkedInCredentials:
+    def _validate(
+        li_at: Any,
+        jsessionid: Any,
+        cookie_header: Any = None,
+    ) -> LinkedInCredentials:
         if not isinstance(li_at, str) or len(li_at.strip()) < 20:
             raise CredentialsUnavailableError("The LinkedIn li_at value is invalid")
         if not isinstance(jsessionid, str) or not jsessionid.strip('"').startswith("ajax:"):
             raise CredentialsUnavailableError("The LinkedIn JSESSIONID value is invalid")
-        return LinkedInCredentials(li_at=li_at.strip(), jsessionid=jsessionid.strip())
+        normalized_li_at = li_at.strip()
+        normalized_jsessionid = jsessionid.strip()
+        normalized_cookie_header = CredentialProvider._validate_cookie_header(
+            cookie_header,
+            li_at=normalized_li_at,
+            jsessionid=normalized_jsessionid,
+        )
+        return LinkedInCredentials(
+            li_at=normalized_li_at,
+            jsessionid=normalized_jsessionid,
+            full_cookie_header=normalized_cookie_header,
+        )
+
+    @staticmethod
+    def _validate_cookie_header(
+        value: Any,
+        *,
+        li_at: str,
+        jsessionid: str,
+    ) -> str | None:
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            raise CredentialsUnavailableError("The LinkedIn Cookie header is invalid")
+        header = value.strip()
+        if not header:
+            return None
+        if len(header) > _MAX_COOKIE_HEADER_LENGTH or any(
+            ord(character) < 0x20 or ord(character) > 0x7E for character in header
+        ):
+            raise CredentialsUnavailableError("The LinkedIn Cookie header is invalid")
+
+        cookies: dict[str, list[str]] = {}
+        for segment in header.split(";"):
+            pair = segment.strip()
+            if not pair:
+                continue
+            if "=" not in pair:
+                raise CredentialsUnavailableError("The LinkedIn Cookie header is invalid")
+            name, cookie_value = pair.split("=", 1)
+            name = name.strip()
+            cookie_value = cookie_value.strip()
+            if not _COOKIE_NAME_PATTERN.fullmatch(name):
+                raise CredentialsUnavailableError("The LinkedIn Cookie header is invalid")
+            cookies.setdefault(name, []).append(cookie_value)
+
+        if cookies.get("li_at") != [li_at]:
+            raise CredentialsUnavailableError(
+                "The LinkedIn Cookie header does not match the li_at value"
+            )
+        header_jsessionids = cookies.get("JSESSIONID", [])
+        if len(header_jsessionids) != 1 or header_jsessionids[0].strip('"') != jsessionid.strip(
+            '"'
+        ):
+            raise CredentialsUnavailableError(
+                "The LinkedIn Cookie header does not match the JSESSIONID value"
+            )
+        return header
 
 
 @lru_cache

@@ -24,8 +24,12 @@ GET /voyager/api/identity/dash/profiles
 The request uses LinkedIn's normalized JSON media type and Rest.li protocol
 header. Authentication comes from the configured `li_at` cookie. LinkedIn's
 `JSESSIONID` value is also sent as a cookie, with its unquoted `ajax:...` value
-used as the CSRF header. These values are read lazily from the environment or AWS
-Secrets Manager and never returned by the API.
+used as the CSRF header. An optional complete `Cookie` header from the same
+session preserves the additional browser-session context LinkedIn can require;
+its `li_at` and `JSESSIONID` values must match the separately validated values.
+The client also sends the ordinary same-origin fetch metadata and profile-page
+referer used by a web-client API request. Credentials are read lazily from the
+environment or AWS Secrets Manager and never returned by the API.
 
 Two known full-profile decoration revisions are tried because the internal
 schema is undocumented and changes over time. The older
