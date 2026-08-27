@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Any
 
 import httpx
@@ -94,6 +95,44 @@ async def test_rejects_login_redirects_and_auth_failures(status: int) -> None:
 
     with pytest.raises(AuthenticationError):
         await _client(handler).fetch_profile("ada-lovelace")
+
+
+async def test_auth_failure_log_contains_only_safe_response_metadata(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    sensitive_redirect = "https://www.linkedin.com/checkpoint?token=provider-secret"
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        del request
+        return httpx.Response(
+            403,
+            headers={
+                "content-type": "text/html; charset=utf-8; private=value",
+                "location": sensitive_redirect,
+                "set-cookie": "li_at=provider-cookie",
+            },
+            text="provider response body",
+        )
+
+    with (
+        caplog.at_level(logging.WARNING, logger="linkedin_profile_api.linkedin"),
+        pytest.raises(AuthenticationError),
+    ):
+        await _client(handler).fetch_profile("ada-lovelace")
+
+    assert caplog.messages == [
+        "event=linkedin_authentication_rejected status=403 redirect=present content_type=text/html"
+    ]
+    logged = caplog.messages[0]
+    for forbidden in (
+        "ada-lovelace",
+        sensitive_redirect,
+        "provider-secret",
+        "provider-cookie",
+        "private=value",
+        "provider response body",
+    ):
+        assert forbidden not in logged
 
 
 async def test_surfaces_linkedin_rate_limiting() -> None:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -21,6 +22,32 @@ from .linkedin_identity import (
     profile_member_ids,
     profile_public_identifiers,
 )
+
+logger = logging.getLogger(__name__)
+
+
+def _safe_media_type(value: str | None) -> str:
+    """Return a bounded media type without logging provider-controlled parameters."""
+
+    if value is None:
+        return "missing"
+    media_type = value.split(";", 1)[0].strip().casefold()
+    allowed = frozenset("abcdefghijklmnopqrstuvwxyz0123456789!#$&^_.+-/")
+    if not media_type or len(media_type) > 100 or any(char not in allowed for char in media_type):
+        return "invalid"
+    return media_type
+
+
+def _log_rejection(event: str, response: httpx.Response) -> None:
+    """Log enough to diagnose a rejection without URLs, bodies, or credentials."""
+
+    logger.warning(
+        "event=%s status=%d redirect=%s content_type=%s",
+        event,
+        response.status_code,
+        "present" if response.headers.get("location") else "absent",
+        _safe_media_type(response.headers.get("content-type")),
+    )
 
 
 @dataclass(slots=True)
@@ -306,6 +333,7 @@ class LinkedInClient:
             try:
                 async with client.stream("GET", path, params=params) as response:
                     if response.status_code in {301, 302, 303, 307, 308, 401, 403}:
+                        _log_rejection("linkedin_authentication_rejected", response)
                         self._credential_provider.clear()
                         raise AuthenticationError("The LinkedIn session is invalid or expired")
                     if response.status_code == 404 and profile_lookup:
@@ -327,6 +355,7 @@ class LinkedInClient:
                         )
 
                     if "json" not in response.headers.get("content-type", "").lower():
+                        _log_rejection("linkedin_unexpected_content_type", response)
                         self._credential_provider.clear()
                         raise AuthenticationError("LinkedIn returned an unexpected login response")
 
