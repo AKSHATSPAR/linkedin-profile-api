@@ -1,0 +1,12 @@
+.git
+.github
+.venv
+.env
+.aws-sam
+__pycache__
+.pytest_cache
+.ruff_cache
+tests
+tmp
+*.pdf
+

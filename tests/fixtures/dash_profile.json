@@ -1,0 +1,93 @@
+{
+  "data": {
+    "*elements": [
+      "urn:li:fsd_profile:member-123"
+    ]
+  },
+  "included": [
+    {
+      "$type": "com.linkedin.voyager.dash.identity.profile.Profile",
+      "entityUrn": "urn:li:fsd_profile:member-123",
+      "publicIdentifier": "ada-lovelace",
+      "firstName": "Ada",
+      "lastName": "Lovelace",
+      "headline": "Analytical Engine Programmer",
+      "summary": "Exploring how machines can manipulate symbols.",
+      "locationName": "London, England",
+      "*geo": "urn:li:fsd_geo:102257491",
+      "followerCount": 1843,
+      "connectionCount": 500,
+      "profilePicture": {
+        "displayImageReference": {
+          "vectorImage": {
+            "rootUrl": "https://media.example.test/",
+            "artifacts": [
+              {
+                "width": 100,
+                "height": 100,
+                "fileIdentifyingUrlPathSegment": "ada-small.jpg"
+              },
+              {
+                "width": 800,
+                "height": 800,
+                "fileIdentifyingUrlPathSegment": "ada-large.jpg"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "$type": "com.linkedin.voyager.dash.common.Geo",
+      "entityUrn": "urn:li:fsd_geo:102257491",
+      "defaultLocalizedName": "London, England"
+    },
+    {
+      "$type": "com.linkedin.voyager.dash.organization.Company",
+      "entityUrn": "urn:li:fsd_company:42",
+      "name": "Babbage Works",
+      "universalName": "babbage-works"
+    },
+    {
+      "$type": "com.linkedin.voyager.dash.identity.profile.Position",
+      "entityUrn": "urn:li:fsd_profilePosition:position-1",
+      "title": "Programmer",
+      "*company": "urn:li:fsd_company:42",
+      "locationName": "London",
+      "dateRange": {
+        "start": {"month": 6, "year": 1842},
+        "end": {"month": 11, "year": 1843}
+      },
+      "description": "Documented the first published algorithm."
+    },
+    {
+      "$type": "com.linkedin.voyager.dash.identity.profile.Education",
+      "entityUrn": "urn:li:fsd_profileEducation:education-1",
+      "schoolName": "Home education",
+      "fieldOfStudy": "Mathematics",
+      "dateRange": {
+        "start": {"year": 1828},
+        "end": {"year": 1835}
+      }
+    },
+    {
+      "$type": "com.linkedin.voyager.dash.identity.profile.Skill",
+      "entityUrn": "urn:li:fsd_skill:skill-1",
+      "name": "Mathematics",
+      "endorsementCount": 12
+    },
+    {
+      "$type": "com.linkedin.voyager.dash.identity.profile.Certification",
+      "entityUrn": "urn:li:fsd_certification:cert-1",
+      "name": "Advanced Symbolic Computing",
+      "authority": "Royal Society",
+      "timePeriod": {"start": {"month": 1, "year": 1843}}
+    },
+    {
+      "$type": "com.linkedin.voyager.dash.identity.profile.Language",
+      "entityUrn": "urn:li:fsd_language:language-1",
+      "name": "English",
+      "proficiency": "NATIVE_OR_BILINGUAL"
+    }
+  ]
+}

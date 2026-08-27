@@ -1,0 +1,73 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: Public, rate-limited LinkedIn profile normalization API
+
+Parameters:
+  LinkedInSecretArn:
+    Type: String
+    Description: ARN of the Secrets Manager JSON secret containing li_at and jsessionid
+    NoEcho: true
+
+Globals:
+  Function:
+    Runtime: python3.12
+    Architectures:
+      - arm64
+    MemorySize: 512
+    Timeout: 30
+    Environment:
+      Variables:
+        LINKEDIN_SECRET_ARN: !Ref LinkedInSecretArn
+        LINKEDIN_REQUEST_TIMEOUT_SECONDS: "20"
+        LINKEDIN_MAX_RETRIES: "2"
+        LINKEDIN_FETCH_SECTION_FALLBACKS: "true"
+        ALLOW_CONTACT_INFO: "false"
+        CACHE_TTL_SECONDS: "300"
+        CACHE_MAX_ENTRIES: "128"
+        RATE_LIMIT_PER_MINUTE: "10"
+
+Resources:
+  ProfileApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      StageName: $default
+      DefaultRouteSettings:
+        ThrottlingBurstLimit: 2
+        ThrottlingRateLimit: 1
+
+  ProfileFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: makefile
+      BuildArchitecture: arm64
+    Properties:
+      CodeUri: .
+      Handler: linkedin_profile_api.lambda_handler.handler
+      Description: Normalizes LinkedIn profile data visible to a configured session
+      ReservedConcurrentExecutions: 2
+      Policies:
+        - AWSSecretsManagerGetSecretValuePolicy:
+            SecretArn: !Ref LinkedInSecretArn
+      Events:
+        Root:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ProfileApi
+            Path: /
+            Method: ANY
+            PayloadFormatVersion: "2.0"
+        Proxy:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ProfileApi
+            Path: /{proxy+}
+            Method: ANY
+            PayloadFormatVersion: "2.0"
+
+Outputs:
+  ApiUrl:
+    Description: Public base URL
+    Value: !Sub https://${ProfileApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}
+  FunctionArn:
+    Description: Lambda function ARN
+    Value: !GetAtt ProfileFunction.Arn

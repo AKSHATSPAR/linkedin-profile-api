@@ -1,0 +1,49 @@
+[project]
+name = "linkedin-profile-api"
+version = "1.0.0"
+description = "A production-minded API for normalized LinkedIn profile data"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+authors = [{ name = "Akshat Sparsh" }]
+dependencies = [
+  "boto3>=1.40,<2",
+  "fastapi>=0.116,<1",
+  "httpx>=0.28,<1",
+  "mangum>=0.19,<1",
+  "pydantic-settings>=2.10,<3",
+  "uvicorn[standard]>=0.35,<1",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = [
+  "boto3-stubs[secretsmanager]>=1.40,<2",
+  "mypy>=1.17,<2",
+  "pytest>=8.4,<9",
+  "pytest-asyncio>=1.1,<2",
+  "pytest-cov>=6.2,<7",
+  "respx>=0.22,<1",
+  "ruff>=0.12,<1",
+]
+
+[tool.pytest.ini_options]
+addopts = "-q --strict-markers --disable-warnings"
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM", "RUF"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+packages = ["linkedin_profile_api"]
+plugins = ["pydantic.mypy"]
