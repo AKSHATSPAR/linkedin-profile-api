@@ -8,12 +8,16 @@ official LinkedIn Partner API.
 Built by [Akshat Sparsh](https://github.com/AKSHATSPAR) for the Tross engineering
 challenge.
 
+**Live:** [API root](https://v5k8x8a787.execute-api.ap-south-1.amazonaws.com) ·
+[interactive docs](https://v5k8x8a787.execute-api.ap-south-1.amazonaws.com/docs) ·
+[health](https://v5k8x8a787.execute-api.ap-south-1.amazonaws.com/health)
+
 ## Try it
 
 Interactive documentation is available at `/docs` on a running deployment.
 
 ```bash
-curl --request POST 'https://YOUR_API_HOST/v1/profiles' \
+curl --request POST 'https://v5k8x8a787.execute-api.ap-south-1.amazonaws.com/v1/profiles' \
   --header 'content-type: application/json' \
   --data '{"url":"https://www.linkedin.com/in/akshat-sparsh-b648a039a/"}'
 ```
@@ -21,7 +25,7 @@ curl --request POST 'https://YOUR_API_HOST/v1/profiles' \
 There is also an evaluator-friendly `GET` form:
 
 ```bash
-curl --get 'https://YOUR_API_HOST/v1/profiles' \
+curl --get 'https://v5k8x8a787.execute-api.ap-south-1.amazonaws.com/v1/profiles' \
   --data-urlencode 'url=https://www.linkedin.com/in/akshat-sparsh-b648a039a/'
 ```
 
@@ -97,7 +101,7 @@ Key choices:
   errors.
 - **Safe public surface.** Input parsing permits only HTTPS LinkedIn member URLs,
   rejects ports and embedded credentials, follows no redirects, rate-limits
-  requests, and caps Lambda concurrency.
+  requests, and applies a global API Gateway throttle.
 - **Minimal personal-data exposure.** Contact information is not required by the
   challenge and is disabled by default. Profile data is cached only in process
   memory and responses carry `Cache-Control: no-store`.
@@ -142,8 +146,8 @@ response or session secret is committed.
 
 The included SAM template deploys a public HTTP API, ARM64 Lambda, and a
 least-privilege runtime permission that can read only the selected secret. It
-also caps function concurrency at two and throttles the gateway to protect the
-session and control spend.
+also throttles the gateway to one request per second with a burst of two to
+protect the session and control spend.
 
 Create a Secrets Manager secret with this JSON shape:
 
@@ -154,13 +158,15 @@ Create a Secrets Manager secret with this JSON shape:
 Then deploy:
 
 ```bash
-sam build --use-container
+sam build
 sam deploy --guided --parameter-overrides LinkedInSecretArn=YOUR_SECRET_ARN
 ```
 
 The custom SAM build copies only the runtime package and dependencies into the
 Lambda artifact. Tests, documentation, local environment files, and the original
-challenge materials are never uploaded with the function.
+challenge materials are never uploaded with the function. It explicitly resolves
+Python 3.12 `manylinux2014_aarch64` wheels, so the artifact remains compatible
+when built from an ARM or x86 Linux/macOS development host.
 
 The stack output named `ApiUrl` is the public base URL. Rotate or delete the
 secret after evaluation. At challenge traffic levels, Lambda and API Gateway are

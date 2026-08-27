@@ -5,11 +5,8 @@ from __future__ import annotations
 import argparse
 import getpass
 import json
+import subprocess
 import sys
-from typing import Any
-
-import boto3
-from botocore.exceptions import ClientError
 
 
 def parse_args() -> argparse.Namespace:
@@ -32,12 +29,27 @@ def require_value(prompt: str) -> str:
     return value
 
 
+def aws(
+    *args: str, input_text: str | None = None, check: bool = True
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["aws", *args],
+        input=input_text,
+        text=True,
+        capture_output=True,
+        check=check,
+    )
+
+
 def main() -> int:
     args = parse_args()
-    session = boto3.Session(profile_name=args.profile, region_name=args.region)
-    identity: dict[str, Any] = session.client("sts").get_caller_identity()
+    common = ("--profile", args.profile, "--region", args.region)
+    identity = json.loads(aws("sts", "get-caller-identity", *common, "--output", "json").stdout)
     if identity.get("Account") != args.expected_account:
-        print("Refusing to write: the authenticated AWS account does not match.", file=sys.stderr)
+        print(
+            "Refusing to write: the authenticated AWS account does not match.",
+            file=sys.stderr,
+        )
         return 2
 
     li_at = require_value("LinkedIn li_at (hidden): ")
@@ -48,23 +60,50 @@ def main() -> int:
         return 2
 
     secret_string = json.dumps({"li_at": li_at, "jsessionid": normalized_jsessionid})
-    client = session.client("secretsmanager")
-    try:
-        current = client.describe_secret(SecretId=args.name)
-    except ClientError as exc:
-        if exc.response.get("Error", {}).get("Code") != "ResourceNotFoundException":
-            raise
-        response = client.create_secret(
-            Name=args.name,
-            Description="Temporary, revocable LinkedIn session for the Tross challenge",
-            SecretString=secret_string,
-            Tags=[{"Key": "Project", "Value": "tross-engineering-challenge"}],
+    current = aws(
+        "secretsmanager",
+        "describe-secret",
+        "--secret-id",
+        args.name,
+        *common,
+        "--output",
+        "json",
+        check=False,
+    )
+    if current.returncode != 0:
+        if "ResourceNotFoundException" not in current.stderr:
+            print(current.stderr.strip(), file=sys.stderr)
+            return current.returncode
+        created = aws(
+            "secretsmanager",
+            "create-secret",
+            "--name",
+            args.name,
+            "--description",
+            "Temporary, revocable LinkedIn session for the Tross challenge",
+            "--secret-string",
+            "file:///dev/stdin",
+            "--tags",
+            "Key=Project,Value=tross-engineering-challenge",
+            *common,
+            "--output",
+            "json",
+            input_text=secret_string,
         )
-        arn = response["ARN"]
+        arn = json.loads(created.stdout)["ARN"]
         action = "created"
     else:
-        arn = current["ARN"]
-        client.put_secret_value(SecretId=arn, SecretString=secret_string)
+        arn = json.loads(current.stdout)["ARN"]
+        aws(
+            "secretsmanager",
+            "put-secret-value",
+            "--secret-id",
+            arn,
+            "--secret-string",
+            "file:///dev/stdin",
+            *common,
+            input_text=secret_string,
+        )
         action = "rotated"
 
     print(f"Secret {action}: {arn}")
