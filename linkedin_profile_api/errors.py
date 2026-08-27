@@ -15,6 +15,10 @@ class ContactInfoDisabledError(ProfileApiError):
     code = "contact_info_disabled"
 
 
+class InvalidProfileUrlError(ProfileApiError, ValueError):
+    code = "invalid_request"
+
+
 class AuthenticationError(ProfileApiError):
     code = "linkedin_authentication_failed"
 

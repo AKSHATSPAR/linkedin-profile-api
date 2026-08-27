@@ -12,19 +12,26 @@ jobs:
   verify:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           enable-cache: true
       - name: Set up Python
         run: uv python install 3.12
       - name: Install dependencies
         run: uv sync --all-groups --frozen
+      - name: Verify lockfile and production exports
+        run: |
+          uv lock --check
+          uv export --locked --no-dev --no-emit-project --no-header --output-file /tmp/requirements.txt
+          uv export --locked --no-dev --no-emit-project --prune uvicorn --no-header --output-file /tmp/requirements-lambda.txt
+          diff -u requirements.txt /tmp/requirements.txt
+          diff -u requirements-lambda.txt /tmp/requirements-lambda.txt
       - name: Format
-        run: uv run ruff format --check .
+        run: uv run --frozen ruff format --check .
       - name: Lint
-        run: uv run ruff check .
+        run: uv run --frozen ruff check .
       - name: Type check
-        run: uv run mypy linkedin_profile_api
+        run: uv run --frozen mypy linkedin_profile_api
       - name: Test
-        run: uv run pytest --cov=linkedin_profile_api --cov-report=term-missing
+        run: uv run --frozen pytest --cov=linkedin_profile_api --cov-report=term-missing --cov-fail-under=95

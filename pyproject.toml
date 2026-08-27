@@ -1,7 +1,7 @@
 [project]
 name = "linkedin-profile-api"
 version = "1.0.0"
-description = "A production-minded API for normalized LinkedIn profile data"
+description = "A bounded API for normalized LinkedIn profile data"
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "MIT" }

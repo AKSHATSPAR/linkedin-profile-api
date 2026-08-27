@@ -35,15 +35,20 @@ class Settings(BaseSettings):
         "AppleWebKit/537.36 (KHTML, like Gecko) "
         "Chrome/131.0.0.0 Safari/537.36"
     )
-    linkedin_request_timeout_seconds: float = Field(default=20.0, gt=0, le=60)
-    linkedin_max_retries: int = Field(default=2, ge=0, le=4)
-    linkedin_fetch_section_fallbacks: bool = True
+    linkedin_request_timeout_seconds: float = Field(default=6.0, gt=0, le=30)
+    linkedin_total_timeout_seconds: float = Field(default=10.0, gt=0, le=45)
+    linkedin_max_retries: int = Field(default=1, ge=0, le=2)
+    linkedin_max_upstream_requests: int = Field(default=8, ge=1, le=16)
+    linkedin_max_response_bytes: int = Field(default=2_000_000, ge=1024, le=10_000_000)
+    linkedin_fetch_section_fallbacks: bool = False
     allow_contact_info: bool = False
 
     aws_region: str = "ap-south-1"
     cache_ttl_seconds: int = Field(default=300, ge=0, le=3600)
     cache_max_entries: int = Field(default=128, ge=1, le=1024)
     rate_limit_per_minute: int = Field(default=10, ge=1, le=120)
+    rate_limit_max_clients: int = Field(default=2048, ge=16, le=16384)
+    max_request_body_bytes: int = Field(default=4096, ge=512, le=65536)
 
 
 @dataclass(frozen=True, slots=True)

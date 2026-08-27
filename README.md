@@ -1,6 +1,6 @@
 # LinkedIn Profile API
 
-A small, production-minded API that accepts a LinkedIn member profile URL and
+A bounded challenge implementation that accepts a LinkedIn member profile URL and
 returns a stable, normalized JSON document. It uses the same authenticated,
 read-only data surface used by LinkedIn's web client; it does not require the
 official LinkedIn Partner API.
@@ -74,16 +74,18 @@ otherwise useful profile.
 
 ```text
 caller
-  │  HTTPS, strict linkedin.com/in/... URL
+  │  HTTPS, strict 512-byte linkedin.com/in/... URL
   ▼
-API Gateway ── global throttle
+API Gateway ── route throttle + one reserved Lambda execution
   ▼
-Lambda / FastAPI ── per-client limiter ── bounded in-memory TTL cache
+Lambda / FastAPI ── 4 KiB body cap ── peer-IP limiter
   │
-  ├── AWS Secrets Manager (session read at cold start/on expiry)
+  ├── bounded process-local TTL cache + same-key single-flight
   │
-  ▼
-LinkedIn Voyager ── profile + bounded-concurrency optional sections
+  ├── AWS Secrets Manager (lazy read on first cache miss, then memory-cached)
+  │
+  ▼  10-second deadline, at most 6 AWS / 8 local physical attempts
+LinkedIn Voyager ── identity-bound primary profile; optional sections off by default
   ▼
 normalizer ── versioned public schema
 ```
@@ -93,15 +95,23 @@ Key choices:
 - **Direct HTTP, not browser automation.** Browser automation was useful only to
   validate the authenticated flow. Runtime requests use `httpx`, making the
   service faster, cheaper, and easier to test.
-- **Modern endpoint with a compatibility path.** The client first requests
-  `identity/dash/profiles?q=memberIdentity` with two known decoration versions,
-  then falls back to the older `profileView` response.
+- **Modern endpoint with a bounded compatibility path.** The client tries two
+  known `identity/dash/profiles?q=memberIdentity` decorations and then the older
+  `profileView` shape. Every physical attempt, including retries and optional
+  sections, consumes one shared per-request budget.
+- **Fail-closed profile identity and ownership.** The profile referenced by
+  LinkedIn's response root must match the requested `publicIdentifier`
+  case-insensitively. Every parsed member-scoped entity (position, education,
+  skill, and similar sections) must encode the same member ID in its URN.
+  Wrong roots and foreign section entities are not normalized or cached, while
+  unrelated non-root profile entities such as recommendations remain harmless.
 - **Stable output over upstream leakage.** LinkedIn URNs and entity graphs are
   normalized into typed Pydantic models. Upstream bodies are never returned in
   errors.
 - **Safe public surface.** Input parsing permits only HTTPS LinkedIn member URLs,
-  rejects ports and embedded credentials, follows no redirects, rate-limits
-  requests, and applies a global API Gateway throttle.
+  rejects ports and embedded credentials, follows no redirects, caps decoded
+  request and upstream response sizes, rate-limits by the actual network peer,
+  and applies API Gateway throttling.
 - **Minimal personal-data exposure.** Contact information is not required by the
   challenge and is disabled by default. Profile data is cached only in process
   memory and responses carry `Cache-Control: no-store`.
@@ -113,6 +123,12 @@ relationship counts, profile/background images, experience, education, skills,
 certifications, languages, projects, publications, courses, honors, and volunteer
 experience. Contact information is modeled but requires an explicit operator
 opt-in with `ALLOW_CONTACT_INFO=true`.
+
+The primary decorated response normally contains these entity sections. The
+eight additional section calls are a compatibility fallback controlled by
+`LINKEDIN_FETCH_SECTION_FALLBACKS`; they are disabled in the committed defaults
+and in AWS. When explicitly enabled they still share the total deadline,
+response-size limit, concurrency limit, and physical-attempt budget.
 
 ## Local development
 
@@ -133,21 +149,28 @@ issue trackers.
 Run the complete local verification suite:
 
 ```bash
-uv run ruff format --check .
-uv run ruff check .
-uv run mypy linkedin_profile_api
-uv run pytest --cov=linkedin_profile_api
+make verify
 ```
 
-The test suite uses a sanitized synthetic Voyager fixture—no real LinkedIn
-response or session secret is committed.
+The test suite uses sanitized synthetic Voyager fixtures—no real LinkedIn
+response or session secret is committed. It covers URL ambiguity and length,
+declared and streamed body limits, forged forwarding headers, profile-root and
+member-ownership mismatches, malformed and oversized upstream payloads, the
+exact physical-call ceiling, optional-section degradation, same-key concurrency
+and cancellation,
+cache expiry, Secrets Manager loading, all normalized section families, stable
+HTTP errors, OpenAPI limits, and an API Gateway v2 Lambda event. CI enforces at
+least 95% line coverage in addition to formatting, lint, strict typing, lockfile
+integrity, and deterministic production dependency exports.
 
 ## AWS deployment
 
-The included SAM template deploys a public HTTP API, ARM64 Lambda, and a
-least-privilege runtime permission that can read only the selected secret. It
-also throttles the gateway to one request per second with a burst of two to
-protect the session and control spend.
+The included SAM template deploys a public HTTP API, a 256 MiB ARM64 Lambda, and
+a least-privilege runtime permission that can read only the selected secret. The
+profile routes have a burst of one and replenish at 0.05 requests per second;
+other documentation and health routes retain a one-request-per-second default.
+Reserved concurrency is one, the Lambda timeout is 15 seconds, and the LinkedIn
+work has a 10-second total deadline with no AWS retries or section fallbacks.
 
 Create a Secrets Manager secret with this JSON shape:
 
@@ -164,14 +187,28 @@ sam deploy --guided --parameter-overrides LinkedInSecretArn=YOUR_SECRET_ARN
 
 The custom SAM build copies only the runtime package and dependencies into the
 Lambda artifact. Tests, documentation, local environment files, and the original
-challenge materials are never uploaded with the function. It explicitly resolves
-Python 3.12 `manylinux2014_aarch64` wheels, so the artifact remains compatible
-when built from an ARM or x86 Linux/macOS development host.
+challenge materials are never uploaded with the function. The runtime dependency
+set is an exact, hash-verified export of `uv.lock`, with Uvicorn pruned from the
+Lambda artifact. It explicitly installs Python 3.12 `manylinux2014_aarch64`
+wheels, so the artifact remains compatible when built from an ARM or x86
+Linux/macOS development host. The optional container build also installs from a
+hash-verified export and pins the Python base-image index digest.
 
 The stack output named `ApiUrl` is the public base URL. Rotate or delete the
-secret after evaluation. At challenge traffic levels, Lambda and API Gateway are
-serverless and the principal standing charge is the single Secrets Manager
-secret; still configure an AWS Budget appropriate for your account.
+secret after evaluation. A `$15` AWS Budget is useful as an alert, but AWS
+Budgets do **not** stop spend. The low route throttle, short deadline, small
+function, and reserved-concurrency ceiling bound this stack's request-driven
+cost under the intended evaluation load; they cannot cap charges from unrelated
+resources in the AWS account.
+
+After the first invocation creates the Lambda log group, set a finite retention
+period as an account control (the reference deployment uses 14 days):
+
+```bash
+aws logs put-retention-policy \
+  --log-group-name /aws/lambda/YOUR_FUNCTION_NAME \
+  --retention-in-days 14
+```
 
 ## Error contract
 
@@ -194,11 +231,18 @@ the configured session is missing or expired.
 ## Constraints and responsible use
 
 LinkedIn's internal web API is undocumented and may change without notice.
-LinkedIn also restricts automated access in its terms. This project is a scoped
-technical demonstration: use it only with authorization, keep request volume
+LinkedIn also restricts automated access in its terms. This is a scoped hiring
+challenge implementation: use it only with authorization, keep request volume
 low, avoid collecting unnecessary personal data, and remove the session after
 the evaluation window. It intentionally does not attempt CAPTCHA bypass,
 credential theft, or access-control circumvention.
+
+The cache, single-flight coordinator, and peer limiter are deliberately
+process-local. API Gateway provides the deployment-wide throttle; multiple local
+Uvicorn workers do not share those in-memory controls. The Docker entry point
+disables proxy-header interpretation. If the service is later placed behind a
+reverse proxy, configure Uvicorn with an explicit trusted proxy allowlist rather
+than trusting arbitrary `X-Forwarded-For` input in the application.
 
 ## License
 

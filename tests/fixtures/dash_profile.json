@@ -50,7 +50,7 @@
     },
     {
       "$type": "com.linkedin.voyager.dash.identity.profile.Position",
-      "entityUrn": "urn:li:fsd_profilePosition:position-1",
+      "entityUrn": "urn:li:fsd_profilePosition:(member-123,position-1)",
       "title": "Programmer",
       "*company": "urn:li:fsd_company:42",
       "locationName": "London",
@@ -62,7 +62,7 @@
     },
     {
       "$type": "com.linkedin.voyager.dash.identity.profile.Education",
-      "entityUrn": "urn:li:fsd_profileEducation:education-1",
+      "entityUrn": "urn:li:fsd_profileEducation:(member-123,education-1)",
       "schoolName": "Home education",
       "fieldOfStudy": "Mathematics",
       "dateRange": {
@@ -72,20 +72,20 @@
     },
     {
       "$type": "com.linkedin.voyager.dash.identity.profile.Skill",
-      "entityUrn": "urn:li:fsd_skill:skill-1",
+      "entityUrn": "urn:li:fsd_profileSkill:(member-123,skill-1)",
       "name": "Mathematics",
       "endorsementCount": 12
     },
     {
       "$type": "com.linkedin.voyager.dash.identity.profile.Certification",
-      "entityUrn": "urn:li:fsd_certification:cert-1",
+      "entityUrn": "urn:li:fsd_profileCertification:(member-123,cert-1)",
       "name": "Advanced Symbolic Computing",
       "authority": "Royal Society",
       "timePeriod": {"start": {"month": 1, "year": 1843}}
     },
     {
       "$type": "com.linkedin.voyager.dash.identity.profile.Language",
-      "entityUrn": "urn:li:fsd_language:language-1",
+      "entityUrn": "urn:li:fsd_profileLanguage:(member-123,language-1)",
       "name": "English",
       "proficiency": "NATIVE_OR_BILINGUAL"
     }

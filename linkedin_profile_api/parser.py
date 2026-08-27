@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-from typing import Any
+from typing import Any, ClassVar
+
+from pydantic import ValidationError
 
 from .errors import ParseError
 from .models import (
@@ -30,7 +32,22 @@ from .models import (
 def _urn_id(value: Any) -> str | None:
     if not isinstance(value, str) or not value:
         return None
-    return value.rsplit(":", 1)[-1]
+    suffix = value.rsplit(":", 1)[-1]
+    if suffix.startswith("(") and suffix.endswith(")"):
+        parts = suffix[1:-1].split(",", 1)
+        if len(parts) == 2 and parts[1]:
+            return parts[1]
+    return suffix
+
+
+def _member_scoped_owner(value: Any) -> str | None:
+    if not isinstance(value, str) or not value:
+        return None
+    suffix = value.rsplit(":", 1)[-1]
+    if not suffix.startswith("("):
+        return None
+    owner, separator, _ = suffix[1:].partition(",")
+    return owner if separator and owner else None
 
 
 def _text(value: Any) -> str | None:
@@ -45,10 +62,24 @@ def _text(value: Any) -> str | None:
     return None
 
 
+def _safe_int(value: Any, *, minimum: int = 0, maximum: int = 100_000) -> int | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        result = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return result if minimum <= result <= maximum else None
+
+
 def _date(value: Any) -> DateValue | None:
     if not isinstance(value, dict):
         return None
-    result = DateValue(year=value.get("year"), month=value.get("month"), day=value.get("day"))
+    result = DateValue(
+        year=_safe_int(value.get("year"), minimum=1, maximum=9999),
+        month=_safe_int(value.get("month"), minimum=1, maximum=12),
+        day=_safe_int(value.get("day"), minimum=1, maximum=31),
+    )
     return result if any((result.year, result.month, result.day)) else None
 
 
@@ -61,10 +92,20 @@ def _date_range(value: Any) -> DateRange | None:
     return result if start or end else None
 
 
-def _image(value: Any) -> ImageAsset | None:
+def _image(
+    value: Any,
+    *,
+    _depth: int = 0,
+    _seen: set[int] | None = None,
+) -> ImageAsset | None:
     """Find the largest LinkedIn VectorImage artifact in common response shapes."""
-    if not isinstance(value, dict):
+    if not isinstance(value, dict) or _depth > 12:
         return None
+    seen = _seen if _seen is not None else set()
+    marker = id(value)
+    if marker in seen:
+        return None
+    seen.add(marker)
 
     for key in (
         "vectorImage",
@@ -75,7 +116,7 @@ def _image(value: Any) -> ImageAsset | None:
         "logo",
     ):
         nested = value.get(key)
-        image = _image(nested)
+        image = _image(nested, _depth=_depth + 1, _seen=seen)
         if image:
             return image
 
@@ -84,7 +125,9 @@ def _image(value: Any) -> ImageAsset | None:
     if isinstance(root, str) and isinstance(artifacts, list) and artifacts:
         artifact = max(
             (item for item in artifacts if isinstance(item, dict)),
-            key=lambda item: int(item.get("width", 0)) * int(item.get("height", 0)),
+            key=lambda item: (
+                (_safe_int(item.get("width")) or 0) * (_safe_int(item.get("height")) or 0)
+            ),
             default=None,
         )
         if artifact:
@@ -92,13 +135,15 @@ def _image(value: Any) -> ImageAsset | None:
             if isinstance(segment, str):
                 url = segment if segment.startswith("http") else f"{root}{segment}"
                 return ImageAsset(
-                    url=url, width=artifact.get("width"), height=artifact.get("height")
+                    url=url,
+                    width=_safe_int(artifact.get("width")),
+                    height=_safe_int(artifact.get("height")),
                 )
     if isinstance(root, str):
         return ImageAsset(url=root)
 
     for nested in value.values():
-        image = _image(nested)
+        image = _image(nested, _depth=_depth + 1, _seen=seen)
         if image:
             return image
     return None
@@ -117,24 +162,78 @@ def _dedupe[T](items: Iterable[T], key: Any) -> list[T]:
 
 
 class VoyagerParser:
+    MAX_DOCUMENTS = 16
+    MAX_ENTITIES = 2000
+    MEMBER_SCOPED_TYPES: ClassVar[frozenset[str]] = frozenset(
+        {
+            "certification",
+            "course",
+            "education",
+            "honor",
+            "language",
+            "position",
+            "project",
+            "publication",
+            "skill",
+            "volunteerexperience",
+        }
+    )
+
     def __init__(self, raw_documents: Iterable[dict[str, Any]]) -> None:
         self.documents = [doc for doc in raw_documents if isinstance(doc, dict)]
+        if len(self.documents) > self.MAX_DOCUMENTS:
+            raise ParseError("LinkedIn returned too many response documents")
+        self._profile_documents = self.documents
+        self._target_member_id: str | None = None
+        self._load_entities(self.documents)
+
+    def _load_entities(self, documents: Iterable[dict[str, Any]]) -> None:
         self.entities: list[dict[str, Any]] = []
-        for document in self.documents:
+        for document in documents:
             included = document.get("included")
             if isinstance(included, list):
                 self.entities.extend(item for item in included if isinstance(item, dict))
+                if len(self.entities) > self.MAX_ENTITIES:
+                    raise ParseError("LinkedIn returned too many profile entities")
         self.urn_map = {
             entity["entityUrn"]: entity
             for entity in self.entities
             if isinstance(entity.get("entityUrn"), str)
         }
 
-    def parse(self, public_identifier: str) -> Profile:
-        legacy = self._legacy_profile_view()
+    def parse(self, public_identifier: str, *, include_contact_info: bool = False) -> Profile:
+        try:
+            return self._parse(public_identifier, include_contact_info=include_contact_info)
+        except ParseError:
+            raise
+        except (ValidationError, TypeError, ValueError, OverflowError, RecursionError) as exc:
+            raise ParseError("LinkedIn returned malformed profile data") from exc
+
+    def _parse(self, public_identifier: str, *, include_contact_info: bool) -> Profile:
+        if not self.documents:
+            raise ParseError("LinkedIn returned no profile document")
+
+        expected = public_identifier.casefold()
+        self._profile_documents = [self.documents[0]]
+        self._profile_documents.extend(
+            document
+            for document in self.documents[1:]
+            if document.get("__source") == "section"
+            and isinstance(document.get("__profile_identifier"), str)
+            and document["__profile_identifier"].casefold() == expected
+        )
+        self._load_entities(self._profile_documents)
+
+        legacy = self._legacy_profile_view(public_identifier)
         entity = self._profile_entity(public_identifier)
         if entity is None and legacy is None:
             raise ParseError("LinkedIn returned no recognizable profile entity")
+
+        if entity is not None:
+            self._target_member_id = self._profile_member_id(entity)
+            self._validate_member_entity_ownership(self._target_member_id)
+        elif legacy is not None:
+            self._target_member_id = self._legacy_member_id(legacy)
 
         if legacy is not None:
             profile = self._parse_legacy(legacy, public_identifier)
@@ -144,26 +243,87 @@ class VoyagerParser:
 
         self._merge_entity_sections(profile)
         self._merge_legacy_sections(profile)
-        self._merge_contact_info(profile)
+        if include_contact_info:
+            self._merge_contact_info(profile, public_identifier)
         return profile
 
-    def _legacy_profile_view(self) -> dict[str, Any] | None:
-        for document in self.documents:
-            if isinstance(document.get("profile"), dict):
-                return document
+    def _legacy_profile_view(self, public_identifier: str) -> dict[str, Any] | None:
+        document = self.documents[0]
+        profile = document.get("profile")
+        if not isinstance(profile, dict):
+            return None
+        candidates = [profile.get("publicIdentifier")]
+        mini = profile.get("miniProfile")
+        if isinstance(mini, dict):
+            candidates.append(mini.get("publicIdentifier"))
+        if any(
+            isinstance(candidate, str) and candidate.casefold() == public_identifier.casefold()
+            for candidate in candidates
+        ):
+            return document
         return None
 
     def _profile_entity(self, public_identifier: str) -> dict[str, Any] | None:
+        primary = self.documents[0]
+        included = primary.get("included")
+        if not isinstance(included, list):
+            return None
         candidates = [
             entity
-            for entity in self.entities
+            for entity in included
+            if isinstance(entity, dict)
             if entity.get("$type") == "com.linkedin.voyager.dash.identity.profile.Profile"
         ]
+        data = primary.get("data")
+        roots = data.get("*elements") if isinstance(data, dict) else None
+        if isinstance(roots, list):
+            root_urns = {value for value in roots if isinstance(value, str)}
+            candidates = [entity for entity in candidates if entity.get("entityUrn") in root_urns]
+        if any(
+            not isinstance(entity.get("publicIdentifier"), str)
+            or entity["publicIdentifier"].casefold() != public_identifier.casefold()
+            for entity in candidates
+        ):
+            raise ParseError("LinkedIn returned conflicting profile identities")
         exact = [
-            entity for entity in candidates if entity.get("publicIdentifier") == public_identifier
+            entity
+            for entity in candidates
+            if isinstance(entity.get("publicIdentifier"), str)
+            and entity["publicIdentifier"].casefold() == public_identifier.casefold()
         ]
-        pool = exact or candidates
-        return max(pool, key=lambda item: len(item), default=None)
+        return max(exact, key=lambda item: len(item), default=None)
+
+    @staticmethod
+    def _profile_member_id(entity: dict[str, Any]) -> str | None:
+        urn = entity.get("entityUrn")
+        if not isinstance(urn, str) or not urn.startswith("urn:li:fsd_profile:"):
+            return None
+        member_id = urn.rsplit(":", 1)[-1]
+        return member_id if member_id and not member_id.startswith("(") else None
+
+    @staticmethod
+    def _legacy_member_id(document: dict[str, Any]) -> str | None:
+        profile = document.get("profile")
+        if not isinstance(profile, dict):
+            return None
+        mini = profile.get("miniProfile")
+        values = [profile.get("entityUrn")]
+        if isinstance(mini, dict):
+            values.append(mini.get("entityUrn"))
+        for value in values:
+            if isinstance(value, str):
+                member_id = value.rsplit(":", 1)[-1]
+                if member_id and not member_id.startswith("("):
+                    return member_id
+        return None
+
+    def _validate_member_entity_ownership(self, member_id: str | None) -> None:
+        for entity in self.entities:
+            type_name = str(entity.get("$type", "")).rsplit(".", 1)[-1].casefold()
+            if type_name not in self.MEMBER_SCOPED_TYPES:
+                continue
+            if member_id is None or _member_scoped_owner(entity.get("entityUrn")) != member_id:
+                raise ParseError("LinkedIn returned profile data owned by another member")
 
     def _resolve(self, entity: dict[str, Any], *fields: str) -> dict[str, Any] | None:
         for field in fields:
@@ -236,11 +396,6 @@ class VoyagerParser:
     def _connection_degree(self, profile: dict[str, Any]) -> int | None:
         relationship = self._resolve(profile, "*memberRelationship")
         candidates = [relationship] if relationship else []
-        candidates.extend(
-            entity
-            for entity in self.entities
-            if str(entity.get("$type", "")).endswith("MemberRelationship")
-        )
         for item in candidates:
             if not isinstance(item, dict):
                 continue
@@ -420,17 +575,28 @@ class VoyagerParser:
         )
 
     def _merge_legacy_sections(self, profile: Profile) -> None:
-        for document in self.documents:
+        for document in self._profile_documents:
             if isinstance(document.get("profile"), dict):
                 self._parse_legacy_view_sections(profile, document)
             elements = document.get("elements")
             if isinstance(elements, list):
+                self._validate_loose_element_ownership(elements)
                 section = document.get("__section")
                 self._parse_loose_elements(
                     profile,
                     elements,
                     section if isinstance(section, str) else None,
                 )
+
+    def _validate_loose_element_ownership(self, elements: list[Any]) -> None:
+        for element in elements:
+            if not isinstance(element, dict):
+                continue
+            if (
+                self._target_member_id is None
+                or _member_scoped_owner(element.get("entityUrn")) != self._target_member_id
+            ):
+                raise ParseError("LinkedIn returned profile data owned by another member")
 
     def _parse_legacy_view_sections(self, profile: Profile, document: dict[str, Any]) -> None:
         view_map = {
@@ -448,6 +614,7 @@ class VoyagerParser:
         for source, target in view_map.items():
             view = document.get(source)
             if isinstance(view, dict) and isinstance(view.get("elements"), list):
+                self._validate_loose_element_ownership(view["elements"])
                 self._parse_loose_elements(profile, view["elements"], target)
 
     def _parse_loose_elements(
@@ -483,8 +650,15 @@ class VoyagerParser:
             extra = getattr(shell, field)
             setattr(profile, field, _dedupe([*current, *extra], lambda item: item.id or repr(item)))
 
-    def _merge_contact_info(self, profile: Profile) -> None:
+    def _merge_contact_info(self, profile: Profile, public_identifier: str) -> None:
         for document in self.documents:
+            source_identifier = document.get("__profile_identifier")
+            if not (
+                document.get("__source") == "contact"
+                and isinstance(source_identifier, str)
+                and source_identifier.casefold() == public_identifier.casefold()
+            ):
+                continue
             if not any(
                 key in document
                 for key in ("emailAddress", "phoneNumbers", "websites", "twitterHandles")

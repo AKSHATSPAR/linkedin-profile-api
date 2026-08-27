@@ -7,13 +7,14 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from .url_utils import parse_linkedin_profile_url
+from .url_utils import MAX_PROFILE_URL_LENGTH, parse_linkedin_profile_url
 
 
 class ProfileRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     url: str = Field(
+        max_length=MAX_PROFILE_URL_LENGTH,
         description="Canonical or regional LinkedIn member profile URL",
         examples=["https://www.linkedin.com/in/akshat-sparsh-b648a039a/"],
     )
