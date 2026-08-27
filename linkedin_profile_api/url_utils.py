@@ -39,17 +39,21 @@ def parse_linkedin_profile_url(value: str) -> LinkedInProfileUrl:
     if "://" not in candidate:
         candidate = f"https://{candidate}"
 
-    parsed = urlsplit(candidate)
+    try:
+        parsed = urlsplit(candidate)
+        hostname = parsed.hostname
+        port = parsed.port
+        username = parsed.username
+        password = parsed.password
+    except ValueError as exc:
+        raise InvalidProfileUrlError("The LinkedIn profile URL is malformed") from exc
     if parsed.scheme != "https":
         raise InvalidProfileUrlError("LinkedIn profile URLs must use HTTPS")
-    if parsed.hostname is None or parsed.hostname.lower() not in _ALLOWED_HOSTS:
+    if hostname is None or hostname.lower() not in _ALLOWED_HOSTS:
         raise InvalidProfileUrlError("Only linkedin.com profile URLs are accepted")
-    try:
-        if parsed.port is not None:
-            raise InvalidProfileUrlError("LinkedIn profile URLs must not specify a port")
-    except ValueError as exc:
-        raise InvalidProfileUrlError("The LinkedIn profile URL has an invalid port") from exc
-    if parsed.username is not None or parsed.password is not None:
+    if port is not None:
+        raise InvalidProfileUrlError("LinkedIn profile URLs must not specify a port")
+    if username is not None or password is not None:
         raise InvalidProfileUrlError("LinkedIn profile URLs must not contain credentials")
 
     parts = [unquote(part) for part in parsed.path.split("/") if part]

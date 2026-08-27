@@ -23,7 +23,8 @@ build-backend = "hatchling.build"
 dev = [
   "boto3-stubs[secretsmanager]>=1.40,<2",
   "mypy>=1.17,<2",
-  "pytest>=8.4,<9",
+  "pip-audit==2.10.1",
+  "pytest>=9.0.3,<10",
   "pytest-asyncio>=1.1,<2",
   "pytest-cov>=6.2,<7",
   "respx>=0.22,<1",

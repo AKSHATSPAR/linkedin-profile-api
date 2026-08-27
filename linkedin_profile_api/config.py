@@ -9,6 +9,7 @@ from functools import lru_cache
 from typing import Any
 
 import boto3
+from botocore.exceptions import BotoCoreError, ClientError
 from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -99,23 +100,38 @@ class CredentialProvider:
         jsessionid = self._settings.linkedin_jsessionid
         if li_at is None or jsessionid is None:
             return None
-        return self._validate(li_at.get_secret_value(), jsessionid.get_secret_value())
+        li_at_value = li_at.get_secret_value()
+        jsessionid_value = jsessionid.get_secret_value()
+        if not li_at_value.strip() and not jsessionid_value.strip():
+            return None
+        return self._validate(li_at_value, jsessionid_value)
 
     def _from_secrets_manager(self) -> LinkedInCredentials:
         secret_arn = self._settings.linkedin_secret_arn
         if secret_arn is None:
             raise CredentialsUnavailableError("No LinkedIn secret ARN is configured")
-        client = boto3.client("secretsmanager", region_name=self._settings.aws_region)
-        response = client.get_secret_value(SecretId=secret_arn)
+        try:
+            client = boto3.client("secretsmanager", region_name=self._settings.aws_region)
+            response = client.get_secret_value(SecretId=secret_arn)
+        except (BotoCoreError, ClientError) as exc:
+            raise CredentialsUnavailableError(
+                "The configured LinkedIn secret could not be loaded"
+            ) from exc
+        if not isinstance(response, dict):
+            raise CredentialsUnavailableError(
+                "The configured LinkedIn secret returned an invalid response"
+            )
         raw = response.get("SecretString")
         if not raw:
             raise CredentialsUnavailableError("The configured LinkedIn secret is empty")
         try:
             secret = json.loads(raw)
-        except json.JSONDecodeError as exc:
+        except (json.JSONDecodeError, RecursionError) as exc:
             raise CredentialsUnavailableError(
                 "The configured LinkedIn secret is not valid JSON"
             ) from exc
+        if not isinstance(secret, dict):
+            raise CredentialsUnavailableError("The configured LinkedIn secret has an invalid shape")
         return self._validate(secret.get("li_at"), secret.get("jsessionid"))
 
     @staticmethod

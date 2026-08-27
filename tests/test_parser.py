@@ -200,6 +200,127 @@ def test_identity_bound_legacy_profile_is_supported() -> None:
     assert profile.full_name == "Ada Lovelace"
 
 
+def test_legacy_included_entities_require_same_member_ownership() -> None:
+    document = {
+        "profile": {
+            "entityUrn": "urn:li:fs_profile:legacy-member",
+            "miniProfile": {
+                "entityUrn": "urn:li:fs_miniProfile:legacy-member",
+                "publicIdentifier": "ada-lovelace",
+                "firstName": "Ada",
+                "lastName": "Lovelace",
+            },
+        },
+        "included": [
+            {
+                "$type": "com.linkedin.voyager.dash.identity.profile.Position",
+                "entityUrn": "urn:li:fsd_profilePosition:(legacy-member,role)",
+                "title": "Verified Role",
+            }
+        ],
+    }
+
+    profile = VoyagerParser([document]).parse("ada-lovelace")
+    assert profile.experience[0].title == "Verified Role"
+
+    document["included"][0]["entityUrn"] = "urn:li:fsd_profilePosition:(other,role)"
+    with pytest.raises(ParseError, match="owned by another member"):
+        VoyagerParser([document]).parse("ada-lovelace")
+
+
+def test_ownership_gate_covers_every_normalized_entity_type_variant() -> None:
+    document = {
+        "profile": {
+            "entityUrn": "urn:li:fs_profile:legacy-member",
+            "publicIdentifier": "ada-lovelace",
+        },
+        "included": [
+            {
+                "$type": "com.linkedin.voyager.identity.ProfileCertificationDetail",
+                "entityUrn": "urn:li:fsd_profileCertification:(legacy-member,1)",
+                "name": "Verified Certificate",
+            }
+        ],
+    }
+
+    profile = VoyagerParser([document]).parse("ada-lovelace")
+    assert profile.certifications[0].name == "Verified Certificate"
+
+    document["included"][0]["entityUrn"] = "urn:li:fsd_profileCertification:(other-member,1)"
+    with pytest.raises(ParseError, match="owned by another member"):
+        VoyagerParser([document]).parse("ada-lovelace")
+
+
+def test_legacy_scoped_entities_require_a_provable_member_id() -> None:
+    document = {
+        "profile": {"publicIdentifier": "ada-lovelace", "firstName": "Ada"},
+        "included": [
+            {
+                "$type": "com.linkedin.voyager.dash.identity.profile.Skill",
+                "entityUrn": "urn:li:fsd_profileSkill:(unknown-member,1)",
+                "name": "Private Skill",
+            }
+        ],
+    }
+
+    with pytest.raises(ParseError, match="owned by another member"):
+        VoyagerParser([document]).parse("ada-lovelace")
+
+
+@pytest.mark.parametrize(
+    "profile",
+    [
+        {
+            "publicIdentifier": "ada-lovelace",
+            "miniProfile": {"publicIdentifier": "another-person"},
+        },
+        {
+            "publicIdentifier": "another-person",
+            "miniProfile": {"publicIdentifier": "ada-lovelace"},
+        },
+        {
+            "entityUrn": "urn:li:fs_profile:legacy-member",
+            "publicIdentifier": "ada-lovelace",
+            "miniProfile": {
+                "entityUrn": "urn:li:fs_miniProfile:other-member",
+                "publicIdentifier": "ada-lovelace",
+            },
+        },
+        {
+            "publicIdentifier": 123,
+            "miniProfile": {"publicIdentifier": "ada-lovelace"},
+        },
+    ],
+)
+def test_conflicting_legacy_identity_representations_are_rejected(
+    profile: dict[str, Any],
+) -> None:
+    with pytest.raises(ParseError, match="profile"):
+        VoyagerParser([{"profile": profile}]).parse("ada-lovelace")
+
+
+def test_matching_case_variant_legacy_identities_remain_supported() -> None:
+    profile = VoyagerParser(
+        [
+            {
+                "profile": {
+                    "entityUrn": "urn:li:fs_profile:legacy-member",
+                    "publicIdentifier": "Ada-Lovelace",
+                    "miniProfile": {
+                        "entityUrn": "urn:li:fs_miniProfile:legacy-member",
+                        "publicIdentifier": "ADA-LOVELACE",
+                        "firstName": "Ada",
+                        "lastName": "Lovelace",
+                    },
+                }
+            }
+        ]
+    ).parse("ada-lovelace")
+
+    assert profile.linkedin_id == "legacy-member"
+    assert profile.full_name == "Ada Lovelace"
+
+
 def test_parses_remaining_supported_sections_and_relationship(
     dash_profile: dict[str, Any],
 ) -> None:
@@ -264,6 +385,25 @@ def test_parses_remaining_supported_sections_and_relationship(
     assert profile.courses[0].number == "MATH-1"
     assert profile.honors[0].issuer == "Royal Society"
     assert profile.volunteer_experience[0].role == "Translator"
+
+
+def test_malformed_relationship_shape_fails_closed(dash_profile: dict[str, Any]) -> None:
+    malformed = deepcopy(dash_profile)
+    profile_entity = next(
+        item
+        for item in malformed["included"]
+        if item.get("$type") == "com.linkedin.voyager.dash.identity.profile.Profile"
+    )
+    profile_entity["*memberRelationship"] = "urn:li:fsd_relationship:malformed"
+    malformed["included"].append(
+        {
+            "entityUrn": "urn:li:fsd_relationship:malformed",
+            "memberRelationshipUnion": {"noConnection": "not-an-object"},
+        }
+    )
+
+    with pytest.raises(ParseError, match="malformed profile data"):
+        VoyagerParser([malformed]).parse("ada-lovelace")
 
 
 def test_parses_identity_bound_legacy_view_sections() -> None:

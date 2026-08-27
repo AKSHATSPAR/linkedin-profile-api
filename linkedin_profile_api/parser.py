@@ -3,11 +3,16 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-from typing import Any, ClassVar
+from typing import Any
 
 from pydantic import ValidationError
 
 from .errors import ParseError
+from .linkedin_identity import (
+    has_malformed_public_identifier,
+    profile_member_ids,
+    profile_public_identifiers,
+)
 from .models import (
     Certification,
     ContactInfo,
@@ -164,20 +169,6 @@ def _dedupe[T](items: Iterable[T], key: Any) -> list[T]:
 class VoyagerParser:
     MAX_DOCUMENTS = 16
     MAX_ENTITIES = 2000
-    MEMBER_SCOPED_TYPES: ClassVar[frozenset[str]] = frozenset(
-        {
-            "certification",
-            "course",
-            "education",
-            "honor",
-            "language",
-            "position",
-            "project",
-            "publication",
-            "skill",
-            "volunteerexperience",
-        }
-    )
 
     def __init__(self, raw_documents: Iterable[dict[str, Any]]) -> None:
         self.documents = [doc for doc in raw_documents if isinstance(doc, dict)]
@@ -229,17 +220,19 @@ class VoyagerParser:
         if entity is None and legacy is None:
             raise ParseError("LinkedIn returned no recognizable profile entity")
 
-        if entity is not None:
-            self._target_member_id = self._profile_member_id(entity)
-            self._validate_member_entity_ownership(self._target_member_id)
-        elif legacy is not None:
-            self._target_member_id = self._legacy_member_id(legacy)
+        entity_member_id = self._profile_member_id(entity) if entity is not None else None
+        legacy_member_id = self._legacy_member_id(legacy) if legacy is not None else None
+        member_ids = {member_id for member_id in (entity_member_id, legacy_member_id) if member_id}
+        if len(member_ids) > 1:
+            raise ParseError("LinkedIn returned conflicting profile identities")
+        self._target_member_id = next(iter(member_ids), None)
+        self._validate_member_entity_ownership(self._target_member_id)
 
-        if legacy is not None:
-            profile = self._parse_legacy(legacy, public_identifier)
-        else:
-            assert entity is not None
+        if entity is not None:
             profile = self._parse_dash(entity, public_identifier)
+        else:
+            assert legacy is not None
+            profile = self._parse_legacy(legacy, public_identifier)
 
         self._merge_entity_sections(profile)
         self._merge_legacy_sections(profile)
@@ -252,16 +245,14 @@ class VoyagerParser:
         profile = document.get("profile")
         if not isinstance(profile, dict):
             return None
-        candidates = [profile.get("publicIdentifier")]
-        mini = profile.get("miniProfile")
-        if isinstance(mini, dict):
-            candidates.append(mini.get("publicIdentifier"))
-        if any(
-            isinstance(candidate, str) and candidate.casefold() == public_identifier.casefold()
-            for candidate in candidates
-        ):
-            return document
-        return None
+        if has_malformed_public_identifier(profile):
+            raise ParseError("LinkedIn returned conflicting profile identities")
+        candidates = profile_public_identifiers(profile)
+        if not candidates:
+            return None
+        if any(candidate.casefold() != public_identifier.casefold() for candidate in candidates):
+            raise ParseError("LinkedIn returned conflicting profile identities")
+        return document
 
     def _profile_entity(self, public_identifier: str) -> dict[str, Any] | None:
         primary = self.documents[0]
@@ -306,24 +297,42 @@ class VoyagerParser:
         profile = document.get("profile")
         if not isinstance(profile, dict):
             return None
-        mini = profile.get("miniProfile")
-        values = [profile.get("entityUrn")]
-        if isinstance(mini, dict):
-            values.append(mini.get("entityUrn"))
-        for value in values:
-            if isinstance(value, str):
-                member_id = value.rsplit(":", 1)[-1]
-                if member_id and not member_id.startswith("("):
-                    return member_id
-        return None
+        member_ids = set(profile_member_ids(profile))
+        if len(member_ids) > 1:
+            raise ParseError("LinkedIn returned conflicting profile identities")
+        return next(iter(member_ids), None)
 
     def _validate_member_entity_ownership(self, member_id: str | None) -> None:
         for entity in self.entities:
-            type_name = str(entity.get("$type", "")).rsplit(".", 1)[-1].casefold()
-            if type_name not in self.MEMBER_SCOPED_TYPES:
+            if self._entity_section_name(entity.get("$type")) is None:
                 continue
             if member_id is None or _member_scoped_owner(entity.get("entityUrn")) != member_id:
                 raise ParseError("LinkedIn returned profile data owned by another member")
+
+    @staticmethod
+    def _entity_section_name(value: Any) -> str | None:
+        type_name = str(value or "").casefold()
+        if type_name.endswith(".position"):
+            return "experience"
+        if type_name.endswith(".education"):
+            return "education"
+        if type_name.endswith(".skill"):
+            return "skills"
+        if "certification" in type_name and not type_name.endswith("collection"):
+            return "certifications"
+        if type_name.endswith(".language"):
+            return "languages"
+        if type_name.endswith(".project"):
+            return "projects"
+        if type_name.endswith(".publication"):
+            return "publications"
+        if type_name.endswith(".course"):
+            return "courses"
+        if type_name.endswith(".honor"):
+            return "honors"
+        if "volunteerexperience" in type_name:
+            return "volunteer_experience"
+        return None
 
     def _resolve(self, entity: dict[str, Any], *fields: str) -> dict[str, Any] | None:
         for field in fields:
@@ -404,7 +413,10 @@ class VoyagerParser:
                 continue
             if any(key in union for key in ("connectedMember", "connected", "connection")):
                 return 1
-            distance = (union.get("noConnection") or {}).get("memberDistance")
+            no_connection = union.get("noConnection")
+            if no_connection is not None and not isinstance(no_connection, dict):
+                raise ParseError("LinkedIn returned malformed profile data")
+            distance = no_connection.get("memberDistance") if no_connection else None
             if distance in {"DISTANCE_1", "DISTANCE_2", "DISTANCE_3"}:
                 return int(distance[-1])
         return None
@@ -422,8 +434,8 @@ class VoyagerParser:
         volunteer: list[VolunteerExperience] = []
 
         for entity in self.entities:
-            type_name = str(entity.get("$type", "")).lower()
-            if type_name.endswith(".position"):
+            section_name = self._entity_section_name(entity.get("$type"))
+            if section_name == "experience":
                 company = self._resolve(entity, "*company", "company")
                 company_name = _text(entity.get("companyName")) or _text(company)
                 company_identifier = (
@@ -447,7 +459,7 @@ class VoyagerParser:
                         description=_text(entity.get("description")),
                     )
                 )
-            elif type_name.endswith(".education"):
+            elif section_name == "education":
                 school = self._resolve(entity, "*school", "school")
                 school_identifier = (
                     school.get("universalName") if isinstance(school, dict) else None
@@ -470,7 +482,7 @@ class VoyagerParser:
                         description=_text(entity.get("description")),
                     )
                 )
-            elif type_name.endswith(".skill") and _text(entity.get("name")):
+            elif section_name == "skills" and _text(entity.get("name")):
                 skills.append(
                     Skill(
                         id=_urn_id(entity.get("entityUrn")),
@@ -478,7 +490,7 @@ class VoyagerParser:
                         endorsement_count=entity.get("endorsementCount"),
                     )
                 )
-            elif "certification" in type_name and not type_name.endswith("collection"):
+            elif section_name == "certifications":
                 issued = entity.get("timePeriod") or entity.get("dateRange") or {}
                 certifications.append(
                     Certification(
@@ -495,7 +507,7 @@ class VoyagerParser:
                         credential_url=_text(entity.get("url")),
                     )
                 )
-            elif type_name.endswith(".language") and _text(entity.get("name")):
+            elif section_name == "languages" and _text(entity.get("name")):
                 languages.append(
                     Language(
                         id=_urn_id(entity.get("entityUrn")),
@@ -503,7 +515,7 @@ class VoyagerParser:
                         proficiency=_text(entity.get("proficiency")),
                     )
                 )
-            elif type_name.endswith(".project"):
+            elif section_name == "projects":
                 projects.append(
                     Project(
                         id=_urn_id(entity.get("entityUrn")),
@@ -513,7 +525,7 @@ class VoyagerParser:
                         url=_text(entity.get("url")),
                     )
                 )
-            elif type_name.endswith(".publication"):
+            elif section_name == "publications":
                 publications.append(
                     Publication(
                         id=_urn_id(entity.get("entityUrn")),
@@ -524,7 +536,7 @@ class VoyagerParser:
                         url=_text(entity.get("url")),
                     )
                 )
-            elif type_name.endswith(".course"):
+            elif section_name == "courses":
                 courses.append(
                     Course(
                         id=_urn_id(entity.get("entityUrn")),
@@ -532,7 +544,7 @@ class VoyagerParser:
                         number=_text(entity.get("number")),
                     )
                 )
-            elif type_name.endswith(".honor"):
+            elif section_name == "honors":
                 honors.append(
                     Honor(
                         id=_urn_id(entity.get("entityUrn")),
@@ -542,7 +554,7 @@ class VoyagerParser:
                         issued_on=_date(entity.get("issuedOn")),
                     )
                 )
-            elif "volunteerexperience" in type_name:
+            elif section_name == "volunteer_experience":
                 volunteer.append(
                     VolunteerExperience(
                         id=_urn_id(entity.get("entityUrn")),

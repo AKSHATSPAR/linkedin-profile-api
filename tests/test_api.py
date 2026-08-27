@@ -66,6 +66,21 @@ async def test_invalid_url_is_a_stable_validation_error() -> None:
     assert response.json()["error"]["request_id"] == response.headers["x-request-id"]
 
 
+async def test_malformed_netloc_is_a_stable_get_and_post_validation_error() -> None:
+    app = create_app(_settings())
+    malformed = "https://[::1/in/ada-lovelace"
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        get_response = await client.get("/v1/profiles", params={"url": malformed})
+        post_response = await client.post("/v1/profiles", json={"url": malformed})
+
+    for response in (get_response, post_response):
+        assert response.status_code == 422
+        assert response.json()["error"]["code"] == "invalid_request"
+        assert response.json()["error"]["request_id"] == response.headers["x-request-id"]
+
+
 async def test_missing_server_credentials_returns_503() -> None:
     app = create_app(Settings(_env_file=None, linkedin_fetch_section_fallbacks=False))
     async with httpx.AsyncClient(
@@ -301,6 +316,77 @@ async def test_foreign_legacy_section_is_rejected_and_never_cached() -> None:
     assert second.status_code == 502
     assert requests == 6
     assert "Foreign Legacy Secret" not in first.text
+
+
+async def test_foreign_legacy_included_entity_is_rejected_and_never_cached() -> None:
+    legacy = {
+        "profile": {
+            "entityUrn": "urn:li:fs_profile:legacy-member",
+            "miniProfile": {
+                "entityUrn": "urn:li:fs_miniProfile:legacy-member",
+                "publicIdentifier": "ada-lovelace",
+                "firstName": "Ada",
+                "lastName": "Lovelace",
+            },
+        },
+        "included": [
+            {
+                "$type": "com.linkedin.voyager.dash.identity.profile.Position",
+                "entityUrn": "urn:li:fsd_profilePosition:(other,role)",
+                "title": "Foreign Included Secret",
+            }
+        ],
+    }
+    requests = 0
+
+    async def linkedin(request: httpx.Request) -> httpx.Response:
+        nonlocal requests
+        requests += 1
+        if request.url.path.endswith("/profileView"):
+            return httpx.Response(200, headers={"content-type": "application/json"}, json=legacy)
+        return httpx.Response(400, headers={"content-type": "application/json"})
+
+    app = create_app(_settings(), transport=httpx.MockTransport(linkedin))
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        first = await client.get(
+            "/v1/profiles", params={"url": "https://linkedin.com/in/ada-lovelace"}
+        )
+        second = await client.get(
+            "/v1/profiles", params={"url": "https://linkedin.com/in/ada-lovelace"}
+        )
+
+    assert first.status_code == 502
+    assert first.json()["error"]["code"] == "linkedin_response_parse_error"
+    assert second.status_code == 502
+    assert requests == 6
+    assert "Foreign Included Secret" not in first.text
+
+
+async def test_request_budget_subclass_inherits_upstream_status() -> None:
+    calls = 0
+
+    async def linkedin(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        del request
+        calls += 1
+        return httpx.Response(200, headers={"content-type": "application/json"}, json={})
+
+    app = create_app(
+        _settings(linkedin_max_upstream_requests=1),
+        transport=httpx.MockTransport(linkedin),
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get(
+            "/v1/profiles", params={"url": "https://linkedin.com/in/ada-lovelace"}
+        )
+
+    assert calls == 1
+    assert response.status_code == 502
+    assert response.json()["error"]["code"] == "linkedin_upstream_error"
 
 
 async def test_cache_key_is_case_insensitive(

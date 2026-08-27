@@ -273,6 +273,27 @@ async def test_accepts_identity_bound_legacy_profile() -> None:
     assert result.documents[0]["profile"]["firstName"] == "Ada"
 
 
+async def test_rejects_conflicting_legacy_identity_representations() -> None:
+    legacy = {
+        "profile": {
+            "entityUrn": "urn:li:fs_profile:legacy-member",
+            "publicIdentifier": "ada-lovelace",
+            "miniProfile": {
+                "entityUrn": "urn:li:fs_miniProfile:other-member",
+                "publicIdentifier": "another-person",
+            },
+        }
+    }
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/profileView"):
+            return httpx.Response(200, headers={"content-type": "application/json"}, json=legacy)
+        return httpx.Response(400, headers={"content-type": "application/json"})
+
+    with pytest.raises(UpstreamResponseError):
+        await _client(handler).fetch_profile("ada-lovelace")
+
+
 async def test_successful_sections_and_contact_are_provenance_tagged(
     dash_profile: dict[str, Any],
 ) -> None:
@@ -358,6 +379,67 @@ async def test_rejects_malformed_json_shapes(content: bytes, message: str) -> No
 
     with pytest.raises(UpstreamResponseError, match=message):
         await _client(handler).fetch_profile("ada-lovelace")
+
+
+async def test_protocol_failures_are_normalized() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.RemoteProtocolError("truncated upstream response", request=request)
+
+    with pytest.raises(UpstreamResponseError, match="could not be reached"):
+        await _client(handler).fetch_profile("ada-lovelace")
+
+
+async def test_content_decoding_failures_are_normalized() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        del request
+        return httpx.Response(
+            200,
+            headers={"content-type": "application/json", "content-encoding": "gzip"},
+            content=b"not-gzip",
+        )
+
+    with pytest.raises(UpstreamResponseError, match="could not be reached"):
+        await _client(handler).fetch_profile("ada-lovelace")
+
+
+async def test_json_recursion_failure_is_normalized(monkeypatch: Any) -> None:
+    def recursive_json_loads(raw: Any) -> Any:
+        del raw
+        raise RecursionError("synthetic decoder depth failure")
+
+    monkeypatch.setattr("linkedin_profile_api.linkedin.json.loads", recursive_json_loads)
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        del request
+        return httpx.Response(
+            200,
+            headers={"content-type": "application/json"},
+            content=b"{}",
+        )
+
+    with pytest.raises(UpstreamResponseError, match="invalid JSON"):
+        await _client(handler).fetch_profile("ada-lovelace")
+
+
+async def test_runtime_requests_are_direct_https_voyager_calls(
+    dash_profile: dict[str, Any],
+) -> None:
+    requests: list[httpx.Request] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            headers={"content-type": "application/json"},
+            json=dash_profile,
+        )
+
+    await _client(handler).fetch_profile("ada-lovelace")
+
+    assert len(requests) == 1
+    assert requests[0].url.scheme == "https"
+    assert requests[0].url.host == "www.linkedin.com"
+    assert requests[0].url.path == "/voyager/api/identity/dash/profiles"
 
 
 async def test_retries_network_errors_then_fails() -> None:

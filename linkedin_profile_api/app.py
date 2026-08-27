@@ -196,8 +196,16 @@ def create_app(
             ParseError: 502,
             UpstreamResponseError: 502,
         }
+        status_code = next(
+            (
+                mapped_status
+                for error_type, mapped_status in status_codes.items()
+                if isinstance(exc, error_type)
+            ),
+            500,
+        )
         response = _error_response(
-            status_code=status_codes.get(type(exc), 500),
+            status_code=status_code,
             code=exc.code,
             message=str(exc),
             request_id=_request_id(request),

@@ -1,9 +1,10 @@
 # LinkedIn Profile API
 
-A bounded challenge implementation that accepts a LinkedIn member profile URL and
-returns a stable, normalized JSON document. It uses the same authenticated,
-read-only data surface used by LinkedIn's web client; it does not require the
-official LinkedIn Partner API.
+A purely reverse-engineered challenge implementation that accepts a LinkedIn
+member profile URL and returns a stable, normalized JSON document. It directly
+calls the authenticated, read-only HTTP surface used by LinkedIn's web client. No
+browser, browser automation, or official LinkedIn Partner API is used by the
+service.
 
 Built by [Akshat Sparsh](https://github.com/AKSHATSPAR) for the Tross engineering
 challenge.
@@ -74,7 +75,7 @@ otherwise useful profile.
 
 ```text
 caller
-  │  HTTPS, strict 512-byte linkedin.com/in/... URL
+  │  HTTPS, strict 512-character linkedin.com/in/... URL
   ▼
 API Gateway ── profile-route burst 1, rate 0.05 requests/second
   ▼
@@ -92,9 +93,9 @@ normalizer ── versioned public schema
 
 Key choices:
 
-- **Direct HTTP, not browser automation.** Browser automation was useful only to
-  validate the authenticated flow. Runtime requests use `httpx`, making the
-  service faster, cheaper, and easier to test.
+- **Direct HTTP, not browser automation.** Runtime extraction uses `httpx` against
+  a fixed LinkedIn origin. It never launches, controls, or depends on a browser;
+  the session cookies are deployment credentials supplied out of band.
 - **Modern endpoint with a bounded compatibility path.** The client tries two
   known `identity/dash/profiles?q=memberIdentity` decorations and then the older
   `profileView` shape. Every physical attempt, including retries and optional
@@ -115,6 +116,13 @@ Key choices:
 - **Minimal personal-data exposure.** Contact information is not required by the
   challenge and is disabled by default. Profile data is cached only in process
   memory and responses carry `Cache-Control: no-store`.
+
+The protocol discovery, endpoint choices, headers, fallbacks, response-graph
+invariants, and limitations are documented in
+[Reverse-engineering notes](REVERSE_ENGINEERING.md). A repository architecture
+test rejects browser-automation dependencies/imports, while client tests capture
+the outbound request and assert that it is a direct HTTPS call to the fixed
+`www.linkedin.com/voyager/api` surface.
 
 ## Returned sections
 
@@ -154,14 +162,16 @@ make verify
 
 The test suite uses sanitized synthetic Voyager fixtures—no real LinkedIn
 response or session secret is committed. It covers URL ambiguity and length,
-declared and streamed body limits, forged forwarding headers, profile-root and
-member-ownership mismatches, malformed and oversized upstream payloads, the
-exact physical-call ceiling, optional-section degradation, same-key concurrency
-and cancellation,
-cache expiry, Secrets Manager loading, all normalized section families, stable
-HTTP errors, OpenAPI limits, and an API Gateway v2 Lambda event. CI enforces at
-least 95% line coverage in addition to formatting, lint, strict typing, lockfile
-integrity, and deterministic production dependency exports.
+declared and streamed body limits, forged forwarding headers, modern and legacy
+profile-root/member-ownership mismatches, conflicting nested identities,
+malformed and oversized upstream payloads, protocol/decoding failures, the exact
+physical-call ceiling, optional-section degradation, same-key concurrency and
+cancellation, cache expiry, Secrets Manager loading/failure sanitation, all
+normalized section families, stable HTTP errors, the no-browser runtime
+invariant, OpenAPI limits, and an API Gateway v2 Lambda event. CI enforces at
+least 95% line coverage, audits locked dependencies for known vulnerabilities,
+and checks formatting, lint, strict typing, lockfile integrity, and deterministic
+production dependency exports.
 
 ## AWS deployment
 

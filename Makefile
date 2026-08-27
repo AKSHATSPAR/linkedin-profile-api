@@ -18,6 +18,7 @@ verify:
 	uv run --locked ruff format --check .
 	uv run --locked ruff check .
 	uv run --locked mypy linkedin_profile_api
+	uv run --locked pip-audit
 	uv run --locked pytest --cov=linkedin_profile_api --cov-report=term-missing --cov-fail-under=95
 	$(MAKE) verify-lock-exports
 

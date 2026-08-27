@@ -16,6 +16,11 @@ from .errors import (
     UpstreamRateLimitedError,
     UpstreamResponseError,
 )
+from .linkedin_identity import (
+    has_malformed_public_identifier,
+    profile_member_ids,
+    profile_public_identifiers,
+)
 
 
 @dataclass(slots=True)
@@ -42,20 +47,6 @@ class _AttemptBudget:
             self._remaining -= 1
 
 
-def _identity(value: Any) -> str | None:
-    if not isinstance(value, dict):
-        return None
-    direct = value.get("publicIdentifier")
-    if isinstance(direct, str) and direct:
-        return direct
-    mini = value.get("miniProfile")
-    if isinstance(mini, dict):
-        nested = mini.get("publicIdentifier")
-        if isinstance(nested, str) and nested:
-            return nested
-    return None
-
-
 def _primary_profile_candidates(document: dict[str, Any]) -> list[dict[str, Any]]:
     included = document.get("included")
     if not isinstance(included, list):
@@ -77,12 +68,32 @@ def _primary_profile_candidates(document: dict[str, Any]) -> list[dict[str, Any]
 def _matches_primary_identity(document: dict[str, Any], public_identifier: str) -> bool:
     expected = public_identifier.casefold()
     candidates = _primary_profile_candidates(document)
-    if candidates:
-        identities = [_identity(entity) for entity in candidates]
-        return all(actual is not None and actual.casefold() == expected for actual in identities)
+    legacy = document.get("profile")
+    legacy_identifiers = profile_public_identifiers(legacy)
+    if has_malformed_public_identifier(legacy):
+        return False
 
-    actual = _identity(document.get("profile"))
-    return actual is not None and actual.casefold() == expected
+    if candidates:
+        for entity in candidates:
+            if has_malformed_public_identifier(entity):
+                return False
+            identities = profile_public_identifiers(entity)
+            if not identities or any(actual.casefold() != expected for actual in identities):
+                return False
+        if any(actual.casefold() != expected for actual in legacy_identifiers):
+            return False
+
+        member_ids = {
+            member_id for entity in candidates for member_id in profile_member_ids(entity)
+        }
+        member_ids.update(profile_member_ids(legacy))
+        return len(member_ids) <= 1
+
+    return (
+        bool(legacy_identifiers)
+        and all(actual.casefold() == expected for actual in legacy_identifiers)
+        and len(set(profile_member_ids(legacy))) <= 1
+    )
 
 
 class LinkedInClient:
@@ -340,10 +351,12 @@ class LinkedInClient:
                     await asyncio.sleep(min(0.4 * (2**attempt), 2.0))
                     continue
                 raise UpstreamResponseError("LinkedIn could not be reached") from exc
+            except (httpx.RequestError, httpx.StreamError) as exc:
+                raise UpstreamResponseError("LinkedIn could not be reached") from exc
 
             try:
                 payload = json.loads(raw)
-            except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            except (json.JSONDecodeError, UnicodeDecodeError, RecursionError) as exc:
                 raise UpstreamResponseError("LinkedIn returned invalid JSON") from exc
             if not isinstance(payload, dict):
                 raise UpstreamResponseError("LinkedIn returned an unexpected response shape")
