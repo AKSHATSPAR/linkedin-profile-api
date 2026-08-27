@@ -196,7 +196,9 @@ class CredentialProvider:
             if not pair:
                 continue
             if "=" not in pair:
-                raise CredentialsUnavailableError("The LinkedIn Cookie header is invalid")
+                if not _COOKIE_NAME_PATTERN.fullmatch(pair):
+                    raise CredentialsUnavailableError("The LinkedIn Cookie header is invalid")
+                continue
             name, cookie_value = pair.split("=", 1)
             name = name.strip()
             cookie_value = cookie_value.strip()

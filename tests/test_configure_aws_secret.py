@@ -34,7 +34,7 @@ def test_clipboard_cookie_header_is_read_without_echoing(monkeypatch: Any) -> No
         ("x=" + ("a" * 32_768), "too long"),
         ("x=one\ny=two", "multiple lines"),
         ("x=one\ty=two", "non-printable"),
-        ("not-a-pair", "not a cookie pair"),
+        ("not a pair", "invalid valueless cookie token"),
         ("bad name=value", "invalid cookie name"),
     ],
 )
@@ -47,6 +47,20 @@ def test_cookie_header_reports_only_safe_shape_errors(header: str, message: str)
         )
 
     assert "ajax:session" not in str(captured.value)
+
+
+def test_cookie_header_preserves_valueless_optional_tokens() -> None:
+    li_at = "a" * 64
+    header = f"legacy_flag; li_at={li_at}; JSESSIONID=ajax:session"
+
+    assert (
+        configure_aws_secret.validate_cookie_header(
+            header,
+            li_at=li_at,
+            jsessionid="ajax:session",
+        )
+        == header
+    )
 
 
 @pytest.mark.parametrize(

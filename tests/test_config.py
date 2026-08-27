@@ -65,6 +65,22 @@ async def test_complete_cookie_header_preserves_repeated_optional_cookies() -> N
     assert credentials.cookie_header == cookie_header
 
 
+async def test_complete_cookie_header_preserves_valueless_optional_tokens() -> None:
+    li_at = "a" * 64
+    cookie_header = f"legacy_flag; li_at={li_at}; JSESSIONID=ajax:session"
+
+    credentials = await CredentialProvider(
+        Settings(
+            _env_file=None,
+            linkedin_li_at=li_at,
+            linkedin_jsessionid="ajax:session",
+            linkedin_cookie_header=cookie_header,
+        )
+    ).get()
+
+    assert credentials.cookie_header == cookie_header
+
+
 async def test_secrets_manager_load_is_coalesced_and_cached(monkeypatch: Any) -> None:
     calls = 0
 

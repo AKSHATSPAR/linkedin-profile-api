@@ -60,7 +60,9 @@ def validate_cookie_header(header: str, *, li_at: str, jsessionid: str) -> str:
         if not pair:
             continue
         if "=" not in pair:
-            raise ValueError("The Cookie header contains text that is not a cookie pair")
+            if not COOKIE_NAME_PATTERN.fullmatch(pair):
+                raise ValueError("The Cookie header contains an invalid valueless cookie token")
+            continue
         name, value = pair.split("=", 1)
         name = name.strip()
         value = value.strip()
