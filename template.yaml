@@ -56,7 +56,6 @@ Resources:
       CodeUri: .
       Handler: linkedin_profile_api.lambda_handler.handler
       Description: Normalizes LinkedIn profile data visible to a configured session
-      ReservedConcurrentExecutions: 1
       Policies:
         - AWSSecretsManagerGetSecretValuePolicy:
             SecretArn: !Ref LinkedInSecretArn

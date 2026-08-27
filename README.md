@@ -76,7 +76,7 @@ otherwise useful profile.
 caller
   │  HTTPS, strict 512-byte linkedin.com/in/... URL
   ▼
-API Gateway ── route throttle + one reserved Lambda execution
+API Gateway ── profile-route burst 1, rate 0.05 requests/second
   ▼
 Lambda / FastAPI ── 4 KiB body cap ── peer-IP limiter
   │
@@ -169,8 +169,9 @@ The included SAM template deploys a public HTTP API, a 256 MiB ARM64 Lambda, and
 a least-privilege runtime permission that can read only the selected secret. The
 profile routes have a burst of one and replenish at 0.05 requests per second;
 other documentation and health routes retain a one-request-per-second default.
-Reserved concurrency is one, the Lambda timeout is 15 seconds, and the LinkedIn
-work has a 10-second total deadline with no AWS retries or section fallbacks.
+The profile-route burst is one, the Lambda timeout is 15 seconds, and the
+LinkedIn work has a 10-second total deadline with no AWS retries or section
+fallbacks.
 
 Create a Secrets Manager secret with this JSON shape:
 
@@ -196,10 +197,10 @@ hash-verified export and pins the Python base-image index digest.
 
 The stack output named `ApiUrl` is the public base URL. Rotate or delete the
 secret after evaluation. A `$15` AWS Budget is useful as an alert, but AWS
-Budgets do **not** stop spend. The low route throttle, short deadline, small
-function, and reserved-concurrency ceiling bound this stack's request-driven
-cost under the intended evaluation load; they cannot cap charges from unrelated
-resources in the AWS account.
+Budgets do **not** stop spend. The low route throttle, burst-one profile routes,
+short deadline, and small function bound this stack's request-driven cost under
+the intended evaluation load; they cannot cap charges from unrelated resources
+in the AWS account.
 
 After the first invocation creates the Lambda log group, set a finite retention
 period as an account control (the reference deployment uses 14 days):
