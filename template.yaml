@@ -43,7 +43,7 @@ Resources:
     Properties:
       StageName: $default
       AccessLogSettings:
-        DestinationArn: !GetAtt ApiAccessLogGroup.Arn
+        DestinationArn: !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/http-api/${AWS::StackName}
         Format: >-
           {"requestId":"$context.requestId","routeKey":"$context.routeKey","method":"$context.httpMethod","status":"$context.status","responseLength":"$context.responseLength","responseLatency":"$context.responseLatency","integrationLatency":"$context.integrationLatency"}
       DefaultRouteSettings:
